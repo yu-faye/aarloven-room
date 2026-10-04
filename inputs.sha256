@@ -1,0 +1,4 @@
+3f0595a05deb4fec4e7bf4ce4f5b2c2561128b17b12f774df71a2267f7f445f8  kmstool_enclave_cli
+f7bdcd7a8c527f16caa8b04280714034899016d7828a1cb0768c4ee8b129590a  libnsm.so
+74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db  models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+a5cd51858f7d41129ef220521d53b4c90cff36ea32155eecfb0cdabe601bea5c  models/model_meta.json

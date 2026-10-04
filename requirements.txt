@@ -1,0 +1,5 @@
+# The room's Python packages, pinned by version and SHA-256 (the wheels for CPython 3.9 on x86_64,
+# as pip 21.3 on Amazon Linux 2023 picks them). Installed with --require-hashes --no-deps.
+cffi==2.0.0 --hash=sha256:61d028e90346df14fedc3d1e5441df818d095f3b87d286825dfcbd6459b7ef63
+cryptography==50.0.2 --hash=sha256:1981f1db4630889b9ef7803fadef12b056f428cb6b85c27ba57b774793b6093c
+pycparser==2.23 --hash=sha256:e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934

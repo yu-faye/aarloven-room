@@ -1,0 +1,2 @@
+root ::= "Result: " yn
+yn ::= "Yes" | "No"

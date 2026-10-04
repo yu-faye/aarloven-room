@@ -1,0 +1,13 @@
+Aarloven sealed room
+Copyright 2026 Aarloven. Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party parts, and where they come from:
+
+- kmstool_enclave_cli: built from aws-nitro-enclaves-sdk-c v0.4.5 (commit cd61b618),
+  https://github.com/aws/aws-nitro-enclaves-sdk-c, Apache License 2.0.
+- libnsm.so: built from aws-nitro-enclaves-nsm-api v0.4.0 by the same SDK build,
+  https://github.com/aws/aws-nitro-enclaves-nsm-api, Apache License 2.0.
+- llama.cpp (fetched during the build at commit d775ebf3), https://github.com/ggml-org/llama.cpp, MIT License.
+- Qwen2.5-0.5B-Instruct, GGUF Q4_K_M (fetched by build.sh, checked by SHA-256),
+  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF, Apache License 2.0.
+- Python packages: cryptography (Apache 2.0 or BSD), cffi (MIT), pycparser (BSD).
