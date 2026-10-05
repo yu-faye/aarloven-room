@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Aarloven sealed room, inside an AWS Nitro Enclave (Room v5: it runs the agreed tests; private cases get private receipts).
+"""Aarloven sealed room, inside an AWS Nitro Enclave (Room v6: it runs the agreed tests; private cases get private receipts;
+a buyer can seal a case in their own browser, to an asymmetric KMS key that only this room can use).
 
 Receives over vsock: short-lived AWS credentials, the room key wrapped by KMS, and a sealed case (AES-256-GCM).
 1. Gets the room key from KMS through kmstool_enclave_cli; KMS checks this enclave's measurement (PCR0) first.
@@ -11,7 +12,8 @@ Receives over vsock: short-lived AWS credentials, the room key wrapped by KMS, a
    fingerprints are sealed to that key (ECDH P-256, HKDF-SHA256, AES-256-GCM), and what everyone else sees, the
    vendor included, is each check's outcome by position. The live steps are redacted the same way.
 4. Signs a receipt with an Ed25519 key made in memory at start. The receipt names each check and its outcome,
-   fingerprints the build, the data and the tests, and names the previous receipt. It asks the Nitro Security
+   fingerprints the build, the data and the tests, and the sealed case and its wrapped key as they arrived (H_wrap,
+   with the case key it names), and names the previous receipt. It asks the Nitro Security
    Module for a document over the receipt's SHA-256, the caller's nonce and the room's public key.
 5. Reports each step as it happens, one JSON line each: key, opened, each clause, signed. The steps carry
    fingerprints, check names and outcomes, never the case's files.
@@ -69,7 +71,7 @@ RUNNER = _runner_version()
 
 
 # ---------- Phase A: signed, attested receipts ----------
-RECEIPT_VERSION = "aarloven.receipt.v4"
+RECEIPT_VERSION = "aarloven.receipt.v5"
 DETAILS_INFO = b"aarloven.receipt.details.v1"  # HKDF info and AES-GCM associated data for sealed details
 NSM_LIB = os.environ.get("NSM_LIB", "/usr/lib64/libnsm.so")
 # made here at boot, never written anywhere, gone when the enclave stops
@@ -114,11 +116,24 @@ def nsm_attest(user_data: bytes, nonce: bytes, public_key: bytes) -> bytes:
     return bytes(buf[: size.value])
 
 
-def ciphertext_hash(envelope: dict) -> str:
+def b64_hash(b64) -> str:
     try:
-        return hashlib.sha256(base64.b64decode(envelope.get("ct_b64") or "", validate=True)).hexdigest()
+        return hashlib.sha256(base64.b64decode(b64 or "", validate=True)).hexdigest()
     except Exception:
         return ""
+
+
+def ciphertext_hash(envelope: dict) -> str:
+    return b64_hash(envelope.get("ct_b64"))
+
+
+def arrived(wrapped_b64, envelope: dict) -> dict:
+    """What came in with the case, fingerprinted before anything is opened: its wrapped key (H_wrap) and the case key it
+    names (a bare key ID, or nothing). A buyer who sealed in their own browser compares H_wrap with the bytes they made:
+    the room unwrapped exactly those, with that KMS key, so the public key they sealed to is that key's."""
+    w = envelope.get("wrap") if isinstance(envelope, dict) else None
+    named = w.get("kms_key") if isinstance(w, dict) else None
+    return {"H_wrap": b64_hash(wrapped_b64), "kms_key": named if isinstance(named, str) and CASE_KEY_RE.fullmatch(named) else ""}
 
 
 def seal(out: dict, request_nonce: str, h_ciphertext: str, verdict: str, emit=None) -> dict:
@@ -131,12 +146,14 @@ def seal(out: dict, request_nonce: str, h_ciphertext: str, verdict: str, emit=No
         "clause_results": out.get("clause_results") or [],
         "private": bool(out.get("details_sealed")),
         "H_ciphertext": h_ciphertext,
+        "H_wrap": out.get("H_wrap") or "",
         "H_input": out.get("H_input") or "",
         "H_build": out.get("H_build") or "",
         "H_data": out.get("H_data") or "",
         "H_tests": out.get("H_tests") or "",
         "H_clauses": out.get("H_clauses") or "",
         "runner": RUNNER,
+        "kms_key": out.get("kms_key") or "",
         "request_nonce": request_nonce,
         "prev": _prev_receipt,
         "signing_key": SIGNING_PUB.hex(),
@@ -172,7 +189,22 @@ def _fail(msg: str, **extra) -> dict:
     return out
 
 
-def kms_decrypt_room_key(creds: dict, wrapped_b64: str) -> bytes:
+# A case sealed in a buyer's browser wraps its key with the public half of an asymmetric KMS key (RSA, OAEP with
+# SHA-256); the envelope names that key by its key ID. Its key policy, like the room key's, lets only this room decrypt.
+CASE_KEY_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def unwrap_with(envelope: dict) -> tuple:
+    """(key ARN, algorithm) for a case sealed to the asymmetric case key, (None, None) for the room key, or an error."""
+    w = envelope.get("wrap")
+    if w is None:
+        return None, None
+    if not (isinstance(w, dict) and w.get("algorithm") == "RSAES_OAEP_SHA_256" and isinstance(w.get("kms_key"), str) and CASE_KEY_RE.fullmatch(w["kms_key"])):
+        raise ValueError("wrap: expected kms_key (a KMS key ID) and algorithm RSAES_OAEP_SHA_256")
+    return w["kms_key"], w["algorithm"]
+
+
+def kms_decrypt_room_key(creds: dict, wrapped_b64: str, key_id: str = None, algorithm: str = None) -> bytes:
     """Decrypt KMS-wrapped room_key inside enclave. Plaintext stays local."""
     cmd = [
         KMSTOOL,
@@ -184,6 +216,8 @@ def kms_decrypt_room_key(creds: dict, wrapped_b64: str) -> bytes:
         "--aws-session-token", creds["Token"],
         "--ciphertext", wrapped_b64,
     ]
+    if key_id:
+        cmd += ["--key-id", key_id, "--encryption-algorithm", algorithm]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "kmstool_decrypt_failed").strip()[:400]
@@ -376,21 +410,24 @@ def process_request(req: dict, emit=None) -> dict:
     if not (isinstance(request_nonce, str) and NONCE_RE.fullmatch(request_nonce)):
         request_nonce = ""
     h_ct = ciphertext_hash(envelope)
+    came = arrived(wrapped, envelope)
+    done = lambda out, verdict: seal({**out, **came}, request_nonce, h_ct, verdict, emit)
     # anything the host adds about the outcome is ignored: the room decides by running the tests
     for k in ("Jev", "jev", "judgments"):
         req.pop(k, None)
 
     room_key = None
     try:
-        room_key = kms_decrypt_room_key(creds, wrapped)
+        key_id, algorithm = unwrap_with(envelope)
+        room_key = kms_decrypt_room_key(creds, wrapped, key_id, algorithm) if key_id else kms_decrypt_room_key(creds, wrapped)
         say({"event": "key"})
         if len(room_key) not in (16, 24, 32):
             say({"event": "refused"})
-            return seal(_fail(f"bad_room_key_len:{len(room_key)}"), request_nonce, h_ct, "void", emit)
+            return done(_fail(f"bad_room_key_len:{len(room_key)}"), "void")
         opened = aesgcm_decrypt(room_key, envelope)
     except Exception as e:
         say({"event": "refused"})
-        return seal(_fail(f"decrypt_fail:{type(e).__name__}:{e}"), request_nonce, h_ct, "void", emit)
+        return done(_fail(f"decrypt_fail:{type(e).__name__}:{e}"), "void")
     finally:
         if isinstance(room_key, (bytes, bytearray)):
             try:
@@ -413,7 +450,7 @@ def process_request(req: dict, emit=None) -> dict:
     }
     say({"event": "opened", **prints, "clauses": len(case.get("clauses") or [])})
     if wrong:
-        return seal(_fail("case:" + "; ".join(wrong)[:300], **prints), request_nonce, h_ct, "fail", emit)
+        return done(_fail("case:" + "; ".join(wrong)[:300], **prints), "fail")
     private_to = case.get("private_to")
     verdict, clauses = run_case(case, lambda n, cid, result, checks: say(
         {"event": "point", "n": n, "id": cid, "result": result, "checks": vendor_view(checks) if private_to else checks}))
@@ -421,7 +458,7 @@ def process_request(req: dict, emit=None) -> dict:
     if private_to:
         sealed = {"details_sealed": seal_details(private_to, canon({"clauses": clauses}).encode())}
         clauses = [{"id": c["id"], "result": c["result"], "checks": vendor_view(c["checks"])} for c in clauses]
-    return seal({
+    return done({
         "verdict": verdict,
         "clauses": clauses,
         "clause_results": [c["result"] for c in clauses],
@@ -431,7 +468,7 @@ def process_request(req: dict, emit=None) -> dict:
         "region": REGION,
         "runner": RUNNER,
         # Explicitly absent: room_key, the case's files, plaintext
-    }, request_nonce, h_ct, verdict, emit)
+    }, verdict)
 
 
 def handle_conn(conn: socket.socket) -> None:
@@ -472,7 +509,7 @@ def handle_conn(conn: socket.socket) -> None:
 
 
 def main() -> int:
-    print(f"[enclave_loop] Room v5 listening vsock:{LISTEN_PORT} region={REGION} runner={RUNNER}", flush=True)
+    print(f"[enclave_loop] Room v6 listening vsock:{LISTEN_PORT} region={REGION} runner={RUNNER}", flush=True)
     sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((socket.VMADDR_CID_ANY, LISTEN_PORT))
