@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aarloven sealed room, inside an AWS Nitro Enclave (Room v4: the room runs the agreed tests itself).
+"""Aarloven sealed room, inside an AWS Nitro Enclave (Room v5: it runs the agreed tests; private cases get private receipts).
 
 Receives over vsock: short-lived AWS credentials, the room key wrapped by KMS, and a sealed case (AES-256-GCM).
 1. Gets the room key from KMS through kmstool_enclave_cli; KMS checks this enclave's measurement (PCR0) first.
@@ -7,6 +7,9 @@ Receives over vsock: short-lived AWS credentials, the room key wrapped by KMS, a
 3. Runs each clause's test with Node: as an unprivileged user, in a folder in memory, with no network, a time
    limit and capped output. A clause is Yes when its test exits 0 with every check passed, No when it exits 10,
    and "not finished" otherwise. The verdict is PASS only when every clause is Yes. No language model decides.
+   A private case names its buyer's public key ("private_to"). Then the receipt's check names, reasons and output
+   fingerprints are sealed to that key (ECDH P-256, HKDF-SHA256, AES-256-GCM), and what everyone else sees, the
+   vendor included, is each check's outcome by position. The live steps are redacted the same way.
 4. Signs a receipt with an Ed25519 key made in memory at start. The receipt names each check and its outcome,
    fingerprints the build, the data and the tests, and names the previous receipt. It asks the Nitro Security
    Module for a document over the receipt's SHA-256, the caller's nonce and the room's public key.
@@ -31,8 +34,11 @@ import tempfile
 import time
 import traceback
 
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 LISTEN_PORT = int(os.environ.get("AARLOVEN_VSOCK_PORT", "5005"))
 REGION = os.environ.get("REGION", "eu-north-1")
@@ -63,7 +69,8 @@ RUNNER = _runner_version()
 
 
 # ---------- Phase A: signed, attested receipts ----------
-RECEIPT_VERSION = "aarloven.receipt.v3"
+RECEIPT_VERSION = "aarloven.receipt.v4"
+DETAILS_INFO = b"aarloven.receipt.details.v1"  # HKDF info and AES-GCM associated data for sealed details
 NSM_LIB = os.environ.get("NSM_LIB", "/usr/lib64/libnsm.so")
 # made here at boot, never written anywhere, gone when the enclave stops
 _SIGNER = Ed25519PrivateKey.generate()
@@ -122,6 +129,7 @@ def seal(out: dict, request_nonce: str, h_ciphertext: str, verdict: str, emit=No
         "verdict": verdict,
         "clauses": out.get("clauses") or [],
         "clause_results": out.get("clause_results") or [],
+        "private": bool(out.get("details_sealed")),
         "H_ciphertext": h_ciphertext,
         "H_input": out.get("H_input") or "",
         "H_build": out.get("H_build") or "",
@@ -134,6 +142,8 @@ def seal(out: dict, request_nonce: str, h_ciphertext: str, verdict: str, emit=No
         "signing_key": SIGNING_PUB.hex(),
         "time": int(time.time()),
     }
+    if out.get("details_sealed"):
+        receipt["details_sealed"] = out["details_sealed"]
     raw = canon(receipt).encode()
     digest = hashlib.sha256(raw).digest()
     out["receipt"] = receipt
@@ -189,8 +199,6 @@ def kms_decrypt_room_key(creds: dict, wrapped_b64: str) -> bytes:
 
 
 def aesgcm_decrypt(key: bytes, envelope: dict) -> bytes:
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
     aad = (envelope.get("aad") or AAD_DEFAULT.decode()).encode()
     iv = base64.b64decode(envelope["iv_b64"])
     ct = base64.b64decode(envelope["ct_b64"])
@@ -221,6 +229,8 @@ def read_case(opened: bytes) -> tuple[dict, list[str]]:
         wrong.append(f"size: over {MAX_BYTES} bytes")
     if not isinstance(clauses, list) or not 0 < len(clauses) <= MAX_CLAUSES:
         return {}, wrong + [f"clauses: 1 to {MAX_CLAUSES}"]
+    if "private_to" in case and not _buyer_key(case["private_to"]):
+        wrong.append("private_to: a P-256 public key as a JWK (kty EC, crv P-256, x, y)")
     seen = set()
     for c in clauses:
         cid = c.get("id") if isinstance(c, dict) else None
@@ -231,6 +241,41 @@ def read_case(opened: bytes) -> tuple[dict, list[str]]:
             wrong.append(f"clause {cid}: test not in the case")
         seen.add(cid)
     return case, wrong
+
+
+def _b64url(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _buyer_key(jwk):
+    """The buyer's public key from a JWK, or None when it is not a valid P-256 key."""
+    try:
+        if not (isinstance(jwk, dict) and jwk.get("kty") == "EC" and jwk.get("crv") == "P-256"):
+            return None
+        x, y = _b64url(jwk["x"]), _b64url(jwk["y"])
+        if len(x) != 32 or len(y) != 32:
+            return None
+        return ec.EllipticCurvePublicNumbers(int.from_bytes(x, "big"), int.from_bytes(y, "big"), ec.SECP256R1()).public_key()
+    except Exception:
+        return None
+
+
+def seal_details(jwk: dict, plaintext: bytes) -> dict:
+    """Seals a receipt's details to the buyer's key: a fresh P-256 key, ECDH with the buyer's, HKDF-SHA256, AES-256-GCM.
+    Only the holder of the buyer's private key can open it; the browser does so with WebCrypto."""
+    eph = ec.generate_private_key(ec.SECP256R1())
+    shared = eph.exchange(ec.ECDH(), _buyer_key(jwk))
+    key = HKDF(algorithm=hashes.SHA256(), length=32, salt=b"aarloven", info=DETAILS_INFO).derive(shared)
+    iv = os.urandom(12)
+    epk = eph.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    return {"alg": "ECDH-P256+HKDF-SHA256+A256GCM", "to": hashlib.sha256(canon({k: jwk[k] for k in ("crv", "kty", "x", "y")}).encode()).hexdigest(),
+            "epk_b64": base64.b64encode(epk).decode(), "iv_b64": base64.b64encode(iv).decode(),
+            "ct_b64": base64.b64encode(AESGCM(key).encrypt(iv, plaintext, DETAILS_INFO)).decode()}
+
+
+def vendor_view(checks: list) -> list:
+    """What everyone may see of a private case's checks: each one's outcome, by position."""
+    return [[None, ok, None] for _, ok, _ in checks]
 
 
 def _limits() -> None:
@@ -369,11 +414,18 @@ def process_request(req: dict, emit=None) -> dict:
     say({"event": "opened", **prints, "clauses": len(case.get("clauses") or [])})
     if wrong:
         return seal(_fail("case:" + "; ".join(wrong)[:300], **prints), request_nonce, h_ct, "fail", emit)
-    verdict, clauses = run_case(case, lambda n, cid, result, checks: say({"event": "point", "n": n, "id": cid, "result": result, "checks": checks}))
+    private_to = case.get("private_to")
+    verdict, clauses = run_case(case, lambda n, cid, result, checks: say(
+        {"event": "point", "n": n, "id": cid, "result": result, "checks": vendor_view(checks) if private_to else checks}))
+    sealed = {}
+    if private_to:
+        sealed = {"details_sealed": seal_details(private_to, canon({"clauses": clauses}).encode())}
+        clauses = [{"id": c["id"], "result": c["result"], "checks": vendor_view(c["checks"])} for c in clauses]
     return seal({
         "verdict": verdict,
         "clauses": clauses,
         "clause_results": [c["result"] for c in clauses],
+        **sealed,
         **prints,
         "tee": "AWS Nitro Enclaves",
         "region": REGION,
@@ -420,7 +472,7 @@ def handle_conn(conn: socket.socket) -> None:
 
 
 def main() -> int:
-    print(f"[enclave_loop] Room v4 listening vsock:{LISTEN_PORT} region={REGION} runner={RUNNER}", flush=True)
+    print(f"[enclave_loop] Room v5 listening vsock:{LISTEN_PORT} region={REGION} runner={RUNNER}", flush=True)
     sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((socket.VMADDR_CID_ANY, LISTEN_PORT))

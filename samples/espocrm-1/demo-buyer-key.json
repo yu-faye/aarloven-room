@@ -1,0 +1,10 @@
+{
+ "about": "The demo buyer's private key, published on purpose so that anyone can play the buyer of the private sample case and open its sealed receipt details. A real buyer's key is made in their own browser and never leaves it.",
+ "jwk": {
+  "kty": "EC",
+  "crv": "P-256",
+  "x": "oSDysJx03C0ks16s9ne9osOk_Fp73dOj17H_x7zjyLQ",
+  "y": "2I7ZBmGwJcF3ndcvohYaDf5kvRcLOtzSgAEz6WBTu1k",
+  "d": "sKW70LYYBONe_esRGcjIOAUf0sbDKUL_wX75ky6vsBY"
+ }
+}
