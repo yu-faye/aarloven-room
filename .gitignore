@@ -1,4 +1,5 @@
-# fetched by build.sh and checked against inputs.sha256
-models/*.gguf
 # build outputs
 *.eif
+__pycache__/
+# local tool caches
+.wrangler/

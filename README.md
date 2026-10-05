@@ -2,8 +2,14 @@
 
 This is the code that runs inside Aarloven's sealed room: an AWS Nitro Enclave in Stockholm (`eu-north-1`).
 
-A buyer's data reaches the room sealed. AWS KMS releases the key only to an enclave whose image measurement (PCR0) is the one this folder builds, so nothing else can open the data, not even us. The room then:
-- tests the delivery against the agreed points;
+A buyer's case reaches the room sealed. It holds:
+- the vendor's build;
+- the buyer's data;
+- the tests that buyer and vendor agreed on.
+
+AWS KMS releases the key only to an enclave whose image measurement (PCR0) is the one this folder builds, so nothing else can open the case, not even us. The room then:
+- runs the agreed tests itself;
+- decides from their results (no language model is involved);
 - signs a receipt;
 - asks AWS's hardware for a document that vouches for that receipt.
 
@@ -12,51 +18,59 @@ Anyone can rebuild the image from this folder and get the same PCR0. Compare it 
 - the PCR0 inside the AWS document that comes with every receipt;
 - the PCR0 that the KMS key policy requires ([aarloven.com/trust](https://aarloven.com/trust)).
 
-## Rebuild it
+## Run the same tests yourself
+
+The sample case on aarloven.com is public: [samples/espocrm-1](samples/espocrm-1) holds the agreed points, the data, the tests, and two builds of the vendor's code (v1.4, and v1.3, which never wrote the duplicate check).
+
+    node rerun.mjs v1.3                 the same tests, laid out as the room lays them out
+    node rerun.mjs v1.3 receipt.json    and compared with a receipt saved on aarloven.com
+
+It prints:
+- each check;
+- the result per point;
+- the fingerprints the room puts in its receipt (`H_input` for the whole case, then `H_build`, `H_data`, `H_tests` and `H_clauses`).
+
+## Rebuild the room
 
 You need x86_64 Linux with Docker (BuildKit) and `nitro-cli` 1.5.0. One way is an EC2 instance running Amazon Linux 2023 with Nitro Enclaves enabled, after `sudo dnf install -y docker aws-nitro-enclaves-cli aws-nitro-enclaves-cli-devel`.
 
     ./build.sh
 
-The script:
-1. fetches the model and checks every input against `inputs.sha256`;
-2. builds without any cache;
-3. prints PCR0, PCR1 and PCR2.
-
-PCR0 covers the whole image; PCR2 covers the room's own filesystem. PCR1 depends on the kernel that ships with `nitro-cli`, so it changes with the `nitro-cli` version.
-
-## What is pinned, and how
+The script checks the two AWS binaries against `inputs.sha256`, builds without any cache, and prints PCR0, PCR1 and PCR2. PCR0 covers the whole image. PCR1 depends on the kernel that ships with `nitro-cli`.
 
 | Input | Pinned by |
 | --- | --- |
 | Base image | Digest `sha256:12052e9b…` (Amazon Linux 2023.12.20260930) |
-| System packages | That release's versioned repository (`--releasever`), and each package by version |
+| System packages | That release's versioned repository (`--releasever`), and each package by version: Python 3.9, Node.js 24.21 |
 | Python packages | Version and SHA-256 (`requirements.txt`), installed without byte-code |
-| llama.cpp | Commit `d775ebf3…`, built for CPU with fixed flags |
 | `kmstool_enclave_cli`, `libnsm.so` | SHA-256 (`inputs.sha256`). Built from AWS's [aws-nitro-enclaves-sdk-c](https://github.com/aws/aws-nitro-enclaves-sdk-c) v0.4.5 (commit `cd61b618`) with its `containers/Dockerfile.al2`, and published here as built |
-| Model | SHA-256 (`inputs.sha256`): Qwen2.5-0.5B-Instruct, Q4_K_M, from [Qwen/Qwen2.5-0.5B-Instruct-GGUF](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF) |
 
-Anything that would differ between two builds is removed or set to zero in stages 3 and 4 of the `Dockerfile`: package databases, logs, caches, and the time on every file.
+The Dockerfile removes or sets everything that would differ between two builds: package databases, logs, caches, the time on every file, and the permissions a checkout gives the copied files.
 
-**Checked on 2026-10-04** (Docker 25.0.16, buildx 0.12.1, nitro-cli 1.5.0). Two builds with no cache, from two copies of this folder whose files carried different times, gave the same image and the same PCR0: `5180d1aed202813220e7bb065c13169899aabbc0cc02617cdf2161e8e82e85fcdc40a0ad273d321a7c8726ad1d302a51`.
+**Checked on 2026-10-05** (Docker 25.0.16, buildx 0.12.1, nitro-cli 1.5.0). Two builds with no cache, from two copies of this folder whose files carried different times and permissions, gave the same image and the same PCR0: `a2f8dbe4e06d7190162ed93b0b69295661365b3339f5c41fe92f74c018085360a7bf9dc188838aa3df4197eff0e57a14`.
 
 ## What the room does with a request
 
 `enclave_loop.py` listens on vsock port 5005 for one request at a time from its host. The request carries:
 - short-lived AWS credentials;
 - the room key, wrapped by KMS;
-- the sealed package;
+- the sealed case;
 - the caller's one-time number (nonce).
 
 The room then:
 1. **Gets the key.** It asks KMS for the room key through `kmstool_enclave_cli`. The request carries the enclave's attestation, so KMS checks PCR0 before it answers.
-2. **Opens the package.** The package is sealed with AES-256-GCM. If even one byte was changed, it does not open, nothing is judged, and the receipt says VOID.
-3. **Judges each agreed point.** It asks Qwen2.5-0.5B (llama.cpp, limited to Yes or No by `yn.gbnf`) about each point.
-4. **Signs a receipt.** The receipt carries the verdict, the answer per point, and fingerprints of the package and of the data read. It is signed with an Ed25519 key that the room makes in its memory when it starts, and it names the previous receipt.
+2. **Opens the case.** The case is sealed with AES-256-GCM. If even one byte was changed, it does not open, nothing is tested, and the receipt says VOID.
+3. **Runs each point's test with Node.**
+   - Each test runs as the unprivileged user `nobody`, so it cannot read the room's memory or its keys.
+   - It runs in a folder in memory, with no network.
+   - It has 10 seconds, capped output, and limits on processes and file size.
+   - A point is **Yes** when its test exits 0 with every check passed, **No** when it exits 10, and **not finished** otherwise.
+   - The verdict is PASS only when every point is Yes.
+4. **Signs a receipt.** The receipt lists each check and its outcome, fingerprints the build, the data and the tests, names the test runner, and names the previous receipt. It is signed with an Ed25519 key that the room makes in its memory when it starts.
 5. **Gets AWS's document.** It asks the Nitro Security Module for a document that carries the receipt's SHA-256, the caller's nonce and the room's public key.
-6. **Reports as it goes.** It reports each step while it happens (key, opened, each point, signed). The steps carry no data or keys.
+6. **Reports as it goes.** It reports each step while it happens (key, opened, each point with its checks, signed). The steps carry fingerprints, check names and outcomes, never the case's files.
 
-Nothing is written to disk: an enclave has none. The files the judge needs live in memory and are deleted after each point.
+A case is canonical JSON: `{"kind": "aarloven.case.v1", "clauses": [{"id", "clause", "test"}], "files": {"build/…", "data/…", "tests/…"}}`. It may hold at most 64 files and 512 KiB, with `.mjs`, `.js`, `.json`, `.txt` or `.csv` files under `build/`, `data/` and `tests/` only.
 
 ## Check a receipt
 

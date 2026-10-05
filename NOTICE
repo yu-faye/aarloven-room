@@ -7,7 +7,7 @@ Third-party parts, and where they come from:
   https://github.com/aws/aws-nitro-enclaves-sdk-c, Apache License 2.0.
 - libnsm.so: built from aws-nitro-enclaves-nsm-api v0.4.0 by the same SDK build,
   https://github.com/aws/aws-nitro-enclaves-nsm-api, Apache License 2.0.
-- llama.cpp (fetched during the build at commit d775ebf3), https://github.com/ggml-org/llama.cpp, MIT License.
-- Qwen2.5-0.5B-Instruct, GGUF Q4_K_M (fetched by build.sh, checked by SHA-256),
-  https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF, Apache License 2.0.
+- Node.js 24 (Amazon Linux 2023 package nodejs24, installed during the build), https://nodejs.org, MIT License.
 - Python packages: cryptography (Apache 2.0 or BSD), cffi (MIT), pycparser (BSD).
+- The sample case in samples/espocrm-1 models EspoCRM's lead conversion;
+  the sample's code is written for this repository, and its data is synthetic.

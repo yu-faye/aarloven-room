@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Aarloven min closed-loop INSIDE Nitro Enclave (in-enclave JEV LLM).
+"""Aarloven sealed room, inside an AWS Nitro Enclave (Room v4: the room runs the agreed tests itself).
 
-Receives (over vsock): KMS-wrapped room_key + AES-GCM envelope (+ optional junk Jev — IGNORED).
-Decrypts room_key via kmstool_enclave_cli (Recipient attestation → KMS).
-Decrypts envelope, runs deterministic schema checks, then CPU llama.cpp on baked GGUF.
-Emits ONLY verdict + hashes + model_name + model_hash. Never returns room_key or plaintext.
-Fail-closed: any model/parse error → fail.
-
-v2 (Phase A): every reply also carries a receipt signed with a key made inside this enclave at boot, and an
-attestation document from the Nitro hardware binding this enclave's PCR0 to the receipt's SHA-256
-(user_data), the caller's nonce, and the signing key (public_key). The browser checks both.
-
-v2 also reports each step as it happens, one JSON line each ({"event": ...}), before the reply line:
-key released, data opened, each point judged, receipt signed. The lines name steps, never data or keys.
+Receives over vsock: short-lived AWS credentials, the room key wrapped by KMS, and a sealed case (AES-256-GCM).
+1. Gets the room key from KMS through kmstool_enclave_cli; KMS checks this enclave's measurement (PCR0) first.
+2. Opens the case. If even one byte was changed it does not open: a signed VOID, and nothing is tested.
+3. Runs each clause's test with Node: as an unprivileged user, in a folder in memory, with no network, a time
+   limit and capped output. A clause is Yes when its test exits 0 with every check passed, No when it exits 10,
+   and "not finished" otherwise. The verdict is PASS only when every clause is Yes. No language model decides.
+4. Signs a receipt with an Ed25519 key made in memory at start. The receipt names each check and its outcome,
+   fingerprints the build, the data and the tests, and names the previous receipt. It asks the Nitro Security
+   Module for a document over the receipt's SHA-256, the caller's nonce and the room's public key.
+5. Reports each step as it happens, one JSON line each: key, opened, each clause, signed. The steps carry
+   fingerprints, check names and outcomes, never the case's files.
 """
 from __future__ import annotations
 
@@ -22,6 +21,9 @@ import hashlib
 import json
 import os
 import re
+import resource
+import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -36,39 +38,32 @@ LISTEN_PORT = int(os.environ.get("AARLOVEN_VSOCK_PORT", "5005"))
 REGION = os.environ.get("REGION", "eu-north-1")
 PROXY_PORT = os.environ.get("KMS_PROXY_PORT", "8000")
 KMSTOOL = os.environ.get("KMSTOOL_CLI", "/app/kmstool_enclave_cli")
-LLAMA_CLI = os.environ.get("LLAMA_CLI", "/app/llama-completion")
-MODEL_PATH = os.environ.get("MODEL_PATH", "/app/models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
-MODEL_NAME = os.environ.get("MODEL_NAME", "Qwen2.5-0.5B-Instruct-Q4_K_M")
-MODEL_META = os.environ.get("MODEL_META", "/app/models/model_meta.json")
-GRAMMAR_PATH = os.environ.get("GRAMMAR_PATH", "/app/yn.gbnf")
+NODE = os.environ.get("NODE_BIN", "/usr/bin/node")
 AAD_DEFAULT = b"aarloven.min_closed_loop.v1"
 
-EXPECTED_CLAUSE_IDS = ["C1", "C2", "C3"]
+# What a case may hold, and how long and how much its tests may take
+CASE_KIND = "aarloven.case.v1"
+MAX_FILES, MAX_BYTES, MAX_CLAUSES = 64, 512 * 1024, 12
+TEST_SECONDS, TEST_OUTPUT = 10, 64 * 1024
+MAX_CHECKS, NAME_CHARS, REASON_CHARS = 40, 160, 240
+TEST_UID = TEST_GID = 65534  # "nobody": cannot read the room's memory, its key or its signing key
+PATH_RE = re.compile(r"(build|data|tests)(/[A-Za-z0-9][A-Za-z0-9._-]*)+")
+EXT_RE = re.compile(r".*\.(mjs|js|json|txt|csv)")
+ID_RE = re.compile(r"[A-Za-z0-9_-]{1,16}")
 
 
-def _load_model_meta() -> tuple[str, str]:
-    name = MODEL_NAME
-    mh = ""
+def _runner_version() -> str:
     try:
-        meta = json.loads(open(MODEL_META, encoding="utf-8").read())
-        name = meta.get("model_name") or name
-        mh = meta.get("model_hash") or ""
-    except Exception:
-        pass
-    if not mh and os.path.isfile(MODEL_PATH):
-        h = hashlib.sha256()
-        with open(MODEL_PATH, "rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        mh = h.hexdigest()
-    return name, mh
+        return "node " + subprocess.run([NODE, "--version"], capture_output=True, text=True, timeout=20).stdout.strip()
+    except Exception as e:
+        return f"node unavailable:{type(e).__name__}"
 
 
-MODEL_NAME_RT, MODEL_HASH_RT = _load_model_meta()
+RUNNER = _runner_version()
 
 
 # ---------- Phase A: signed, attested receipts ----------
-RECEIPT_VERSION = "aarloven.receipt.v2"
+RECEIPT_VERSION = "aarloven.receipt.v3"
 NSM_LIB = os.environ.get("NSM_LIB", "/usr/lib64/libnsm.so")
 # made here at boot, never written anywhere, gone when the enclave stops
 _SIGNER = Ed25519PrivateKey.generate()
@@ -125,11 +120,15 @@ def seal(out: dict, request_nonce: str, h_ciphertext: str, verdict: str, emit=No
     receipt = {
         "v": RECEIPT_VERSION,
         "verdict": verdict,
+        "clauses": out.get("clauses") or [],
         "clause_results": out.get("clause_results") or [],
         "H_ciphertext": h_ciphertext,
         "H_input": out.get("H_input") or "",
-        "H_result": out.get("H_result") or "",
-        "model_hash": MODEL_HASH_RT,
+        "H_build": out.get("H_build") or "",
+        "H_data": out.get("H_data") or "",
+        "H_tests": out.get("H_tests") or "",
+        "H_clauses": out.get("H_clauses") or "",
+        "runner": RUNNER,
         "request_nonce": request_nonce,
         "prev": _prev_receipt,
         "signing_key": SIGNING_PUB.hex(),
@@ -151,22 +150,13 @@ def seal(out: dict, request_nonce: str, h_ciphertext: str, verdict: str, emit=No
 
 
 def _fail(msg: str, **extra) -> dict:
-    H_result = hashlib.sha256(b"REJECT_DETERMINISTIC").hexdigest()
-    H_jev = hashlib.sha256(b"SKIPPED").hexdigest()
     out = {
         "verdict": "fail",
-        "zh": "不过",
-        "det_ok": False,
         "error": msg,
         "H_input": extra.get("H_input", hashlib.sha256(b"").hexdigest()),
-        "H_result": H_result,
-        "H_jev": H_jev,
-        "nonce": extra.get("nonce", ""),
         "tee": "AWS Nitro Enclaves",
         "region": REGION,
-        "model_name": MODEL_NAME_RT,
-        "model_hash": MODEL_HASH_RT,
-        "summary": f"verdict=fail | error={msg} | H(result)={H_result} | model={MODEL_NAME_RT}",
+        "runner": RUNNER,
     }
     out.update({k: v for k, v in extra.items() if k not in out})
     return out
@@ -207,154 +197,124 @@ def aesgcm_decrypt(key: bytes, envelope: dict) -> bytes:
     return AESGCM(key).decrypt(iv, ct, aad)
 
 
-def run_deterministic(opened: bytes) -> tuple[bool, list[str], dict, str]:
-    fail: list[str] = []
+def group_hash(files: dict, group: str) -> str:
+    """One fingerprint for a group of files: SHA-256 of the canonical list of [path, SHA-256 of its text]."""
+    items = sorted([p, hashlib.sha256(c.encode()).hexdigest()] for p, c in files.items() if p.startswith(group + "/"))
+    return hashlib.sha256(canon(items).encode()).hexdigest()
+
+
+def read_case(opened: bytes) -> tuple[dict, list[str]]:
+    """The case, and what is wrong with it (nothing, when it may run)."""
     try:
-        pkg = json.loads(opened.decode())
+        case = json.loads(opened.decode())
     except Exception as e:
-        return False, [f"json:{e}"], {}, hashlib.sha256(opened).hexdigest()
-    H_input = hashlib.sha256(opened).hexdigest()
-    ids = [c.get("id") for c in (pkg.get("clauses") or [])]
-    if not pkg.get("seller_evidence"):
-        fail.append("missing_seller_evidence")
-    if ids != EXPECTED_CLAUSE_IDS:
-        fail.append(f"clause_ids:{ids}")
-    if not pkg.get("nonce"):
-        fail.append("missing_nonce")
-    return (len(fail) == 0), fail, pkg, H_input
-
-
-# Extractive questions tuned for Qwen2.5-0.5B Q4 (abstract rubric-satisfy prompts are unreliable at 0.5B).
-CLAUSE_QUESTIONS = {
-    "C1": "Does the TEXT say the user must have edit access?",
-    "C2": "Does the TEXT say finding a duplicate stops conversion?",
-    "C3": "Does the TEXT say the lead status is set to Converted when conversion finishes?",
-}
-
-
-def _build_prompt(evidence: str, clause: dict) -> str:
-    """Qwen2.5 ChatML extractive Yes/No (GBNF-constrained)."""
-    cid = clause.get("id", "?")
-    q = CLAUSE_QUESTIONS.get(cid)
-    if not q:
-        rubric = (clause.get("rubric") or "").strip()
-        q = f"Does the TEXT support this requirement: {rubric}"
-    return (
-        "<|im_start|>system\n"
-        "Answer using only: Result: Yes OR Result: No\n"
-        "<|im_end|>\n"
-        "<|im_start|>user\n"
-        f"TEXT:\n{evidence}\n\nQUESTION: {q}\n"
-        "<|im_end|>\n"
-        "<|im_start|>assistant\n"
-    )
-
-
-def _llama_once(prompt: str) -> str:
-    """Run baked llama-cli on CPU; fail-closed on any error."""
-    if not os.path.isfile(LLAMA_CLI):
-        raise RuntimeError("llama_cli_missing")
-    if not os.path.isfile(MODEL_PATH):
-        raise RuntimeError("model_gguf_missing")
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as tf:
-        tf.write(prompt)
-        prompt_path = tf.name
-    try:
-        cmd = [
-            LLAMA_CLI,
-            "-m", MODEL_PATH,
-            "-f", prompt_path,
-            "-n", "8",
-            "--temp", "0",
-            "--seed", "42",
-            "-c", "2048",
-            "-t", "2",
-            "--no-display-prompt",
-            "--simple-io",
-            "-no-cnv",
-        ]
-        if os.path.isfile(GRAMMAR_PATH):
-            cmd.extend(["--grammar-file", GRAMMAR_PATH])
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=180,
-            env={**os.environ, "LLAMA_ARG_NO_PERF": "1"},
-        )
-        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        if proc.returncode != 0 and not (proc.stdout or "").strip():
-            raise RuntimeError(f"llama_rc={proc.returncode}:{(proc.stderr or '')[:300]}")
-        return proc.stdout or out
-    finally:
-        try:
-            os.unlink(prompt_path)
-        except Exception:
-            pass
-
-
-def _parse_yes_no(text: str) -> str:
-    """Parse Result: Yes|No; anything else → UNJUDGED (fail-closed)."""
-    m = re.search(r"(?im)\bResult:\s*(Yes|No)\b", text or "")
-    if m:
-        return "Yes" if m.group(1).lower() == "yes" else "No"
-    # fallback: lone Yes/No on a line near the end
-    m2 = re.search(r"(?im)^\s*(Yes|No)\s*$", text or "", re.M)
-    if m2:
-        return "Yes" if m2.group(1).lower() == "yes" else "No"
-    return "UNJUDGED"
-
-
-def run_jev_llm(pkg: dict, on_point=None) -> tuple[str, list[str], str, str]:
-    """In-enclave semantic JEV via baked GGUF. Parent-supplied Jev is NEVER used."""
-    evidence = (pkg.get("seller_evidence") or "").strip()
-    clauses = pkg.get("clauses") or []
-    results: list[str] = []
-    jev_parts: list[str] = []
+        return {}, [f"json:{type(e).__name__}"]
+    if not isinstance(case, dict) or case.get("kind") != CASE_KIND:
+        return {}, ["kind: expected " + CASE_KIND]
+    files, clauses, wrong = case.get("files"), case.get("clauses"), []
+    if not isinstance(files, dict) or not 0 < len(files) <= MAX_FILES:
+        return {}, [f"files: 1 to {MAX_FILES}"]
+    for path, text in files.items():
+        if not (isinstance(path, str) and PATH_RE.fullmatch(path) and EXT_RE.fullmatch(path) and isinstance(text, str)):
+            wrong.append("file:" + str(path)[:80])
+    if sum(len(t.encode()) for t in files.values() if isinstance(t, str)) > MAX_BYTES:
+        wrong.append(f"size: over {MAX_BYTES} bytes")
+    if not isinstance(clauses, list) or not 0 < len(clauses) <= MAX_CLAUSES:
+        return {}, wrong + [f"clauses: 1 to {MAX_CLAUSES}"]
+    seen = set()
     for c in clauses:
+        cid = c.get("id") if isinstance(c, dict) else None
+        test = c.get("test") if isinstance(c, dict) else None
+        if not (isinstance(cid, str) and ID_RE.fullmatch(cid)) or cid in seen:
+            wrong.append("clause id:" + str(cid)[:20])
+        elif not (isinstance(test, str) and test.startswith("tests/") and test in files):
+            wrong.append(f"clause {cid}: test not in the case")
+        seen.add(cid)
+    return case, wrong
+
+
+def _limits() -> None:
+    # in the test's own process, before Node starts
+    resource.setrlimit(resource.RLIMIT_CPU, (TEST_SECONDS + 5, TEST_SECONDS + 5))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (1 << 20, 1 << 20))
+    resource.setrlimit(resource.RLIMIT_NPROC, (32, 32))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+def _clip(text: str, n: int) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def run_test(workdir: str, test: str) -> tuple[str, list, str]:
+    """Runs one clause's test. Returns its result (Yes, No, not finished), its checks, and its output's SHA-256."""
+    out_path = os.path.join(workdir, ".out-" + hashlib.sha256(test.encode()).hexdigest()[:12])
+    with open(out_path, "wb") as out:
         try:
-            raw = _llama_once(_build_prompt(evidence, c))
-            parsed = _parse_yes_no(raw)
-            # Keep a short reasoning snippet for hash only (not leaked as plaintext evidence)
-            snippet = re.sub(r"\s+", " ", (raw or "").strip())[:240]
-        except Exception as e:
-            parsed = "FAIL"
-            snippet = f"model_error:{type(e).__name__}"
-        results.append(parsed)
-        if on_point:
-            on_point(len(results), c.get("id"), parsed)
-        jev_parts.append(
-            json.dumps(
-                {
-                    "id": c.get("id"),
-                    "result": parsed,
-                    "model": MODEL_NAME_RT,
-                    "model_hash": MODEL_HASH_RT,
-                    "raw_snip": snippet,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
+            proc = subprocess.Popen(
+                [NODE, "--max-old-space-size=256", "--no-warnings", test],
+                cwd=workdir, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                env={"PATH": "/usr/bin:/bin", "HOME": workdir, "LANG": "C.UTF-8"},
+                preexec_fn=_limits, start_new_session=True,
+                # in the enclave the room runs as root, and each test as "nobody"; a room already running
+                # unprivileged (a developer's machine) cannot switch users, and needs no switch
+                **(dict(user=TEST_UID, group=TEST_GID, extra_groups=[]) if os.geteuid() == 0 else {}),
             )
-        )
-    # Fail-closed: No / FAIL / UNJUDGED → fail
-    verdict = "fail" if any(r in ("No", "FAIL", "UNJUDGED") for r in results) else "pass"
-    H_result = hashlib.sha256(
-        json.dumps(
-            {
-                "verdict": verdict,
-                "clause_results": results,
-                "fail_default": "reject",
-                "model_name": MODEL_NAME_RT,
-                "model_hash": MODEL_HASH_RT,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
-    H_jev = hashlib.sha256("\n".join(jev_parts).encode()).hexdigest()
-    return verdict, results, H_result, H_jev
+        except Exception as e:
+            return "not finished", [["the test could start", False, f"{type(e).__name__}"]], ""
+        try:
+            code = proc.wait(timeout=TEST_SECONDS)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            code = None
+    with open(out_path, "rb") as f:
+        raw = f.read(TEST_OUTPUT)
+    checks = []
+    for line in raw.decode("utf-8", "replace").splitlines():
+        if line.startswith("✓ "):
+            checks.append([_clip(line[2:], NAME_CHARS), True, ""])
+        elif line.startswith("✗ "):
+            name, _, reason = line[2:].partition(" — ")
+            checks.append([_clip(name, NAME_CHARS), False, _clip(reason, REASON_CHARS)])
+        if len(checks) >= MAX_CHECKS:
+            break
+    if code is None:
+        checks.append([f"finishes within {TEST_SECONDS} s", False, "it was stopped"])
+        result = "not finished"
+    elif code == 0 and checks and all(ok for _, ok, _ in checks):
+        result = "Yes"
+    elif code == 10:
+        result = "No"
+    else:
+        lines = [ln.strip() for ln in raw.decode("utf-8", "replace").splitlines() if ln.strip() and not ln.startswith("Node.js v")]
+        why = next((ln for ln in lines if re.match(r"^\w*Error\b", ln)), lines[-1] if lines else f"exit {code}")
+        checks.append(["the test ran to its end", False, _clip(why, REASON_CHARS)])
+        result = "not finished"
+    return result, checks, hashlib.sha256(raw).hexdigest()
+
+
+def run_case(case: dict, on_clause=None) -> tuple[str, list]:
+    """Writes the case to a folder in memory, runs each clause's test, and removes the folder."""
+    workdir = tempfile.mkdtemp(prefix="case-", dir="/tmp")
+    try:
+        os.chmod(workdir, 0o755)
+        for path, text in case["files"].items():
+            full = os.path.join(workdir, path)
+            os.makedirs(os.path.dirname(full), mode=0o755, exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.chmod(full, 0o644)
+        clauses = []
+        for n, c in enumerate(case["clauses"], 1):
+            result, checks, h_out = run_test(workdir, c["test"])
+            clauses.append({"id": c["id"], "result": result, "checks": checks, "H_output": h_out})
+            if on_clause:
+                on_clause(n, c["id"], result, checks)
+        verdict = "pass" if clauses and all(c["result"] == "Yes" for c in clauses) else "fail"
+        return verdict, clauses
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def process_request(req: dict, emit=None) -> dict:
@@ -371,10 +331,9 @@ def process_request(req: dict, emit=None) -> dict:
     if not (isinstance(request_nonce, str) and NONCE_RE.fullmatch(request_nonce)):
         request_nonce = ""
     h_ct = ciphertext_hash(envelope)
-    # IGNORE any parent-supplied Jev / judgments — in-enclave model only
-    _ = req.pop("Jev", None)
-    req.pop("jev", None)
-    req.pop("judgments", None)
+    # anything the host adds about the outcome is ignored: the room decides by running the tests
+    for k in ("Jev", "jev", "judgments"):
+        req.pop(k, None)
 
     room_key = None
     try:
@@ -397,35 +356,29 @@ def process_request(req: dict, emit=None) -> dict:
                 pass
             room_key = None
 
-    det_ok, det_fail, pkg, H_input = run_deterministic(opened)
-    say({"event": "opened", "H_input": H_input})
-    nonce = (pkg or {}).get("nonce", "")
-    if not det_ok:
-        out = _fail("deterministic:" + ",".join(det_fail), H_input=H_input, nonce=nonce)
-        out["det_fail"] = det_fail
-        return seal(out, request_nonce, h_ct, "fail", emit)
-
-    verdict, results, H_result, H_jev = run_jev_llm(pkg, lambda n, cid, result: say({"event": "point", "n": n, "id": cid, "result": result}))
-    zh = "过" if verdict == "pass" else "不过"
-    summary = (
-        f"verdict={verdict} | H(input)={H_input} | H(result)={H_result} "
-        f"| H(jev)={H_jev} | nonce={nonce} | model={MODEL_NAME_RT} | model_hash={MODEL_HASH_RT[:16]}…"
-    )
+    H_input = hashlib.sha256(opened).hexdigest()
+    case, wrong = read_case(opened)
+    files = case.get("files") or {}
+    prints = {
+        "H_input": H_input,
+        "H_build": group_hash(files, "build") if files else "",
+        "H_data": group_hash(files, "data") if files else "",
+        "H_tests": group_hash(files, "tests") if files else "",
+        "H_clauses": hashlib.sha256(canon(case.get("clauses") or []).encode()).hexdigest() if case else "",
+    }
+    say({"event": "opened", **prints, "clauses": len(case.get("clauses") or [])})
+    if wrong:
+        return seal(_fail("case:" + "; ".join(wrong)[:300], **prints), request_nonce, h_ct, "fail", emit)
+    verdict, clauses = run_case(case, lambda n, cid, result, checks: say({"event": "point", "n": n, "id": cid, "result": result, "checks": checks}))
     return seal({
         "verdict": verdict,
-        "zh": zh,
-        "det_ok": True,
-        "clause_results": results,
-        "H_input": H_input,
-        "H_result": H_result,
-        "H_jev": H_jev,
-        "nonce": nonce,
-        "summary": summary,
+        "clauses": clauses,
+        "clause_results": [c["result"] for c in clauses],
+        **prints,
         "tee": "AWS Nitro Enclaves",
         "region": REGION,
-        "model_name": MODEL_NAME_RT,
-        "model_hash": MODEL_HASH_RT,
-        # Explicitly absent: room_key, seller_evidence, plaintext, parent Jev
+        "runner": RUNNER,
+        # Explicitly absent: room_key, the case's files, plaintext
     }, request_nonce, h_ct, verdict, emit)
 
 
@@ -467,11 +420,7 @@ def handle_conn(conn: socket.socket) -> None:
 
 
 def main() -> int:
-    print(
-        f"[enclave_loop] listening vsock:{LISTEN_PORT} region={REGION} "
-        f"model={MODEL_NAME_RT} hash={MODEL_HASH_RT[:16]}…",
-        flush=True,
-    )
+    print(f"[enclave_loop] Room v4 listening vsock:{LISTEN_PORT} region={REGION} runner={RUNNER}", flush=True)
     sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((socket.VMADDR_CID_ANY, LISTEN_PORT))

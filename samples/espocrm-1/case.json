@@ -1,0 +1,15 @@
+{
+  "kind": "aarloven.case.v1",
+  "title": "EspoCRM lead conversion",
+  "about": "A vendor delivers lead conversion for a CRM. Buyer and vendor agreed three points, each with a test. The data is synthetic.",
+  "clauses": [
+    { "id": "C1", "clause": "A person without permission cannot turn a lead into a customer.", "test": "tests/c1.test.mjs" },
+    { "id": "C2", "clause": "When the same customer already exists, conversion stops.", "test": "tests/c2.test.mjs" },
+    { "id": "C3", "clause": "After conversion, the lead is marked converted.", "test": "tests/c3.test.mjs" }
+  ],
+  "builds": {
+    "v1.4": { "file": "builds/v1.4/convert.mjs", "about": "The vendor's delivery." },
+    "v1.3": { "file": "builds/v1.3/convert.mjs", "about": "An earlier delivery: the duplicate check was never written." }
+  },
+  "files": ["data/leads.json", "tests/check.mjs", "tests/c1.test.mjs", "tests/c2.test.mjs", "tests/c3.test.mjs"]
+}

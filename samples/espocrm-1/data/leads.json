@@ -1,0 +1,14 @@
+{
+  "users": [
+    { "id": "u-sales", "name": "Sales rep", "acl": { "Lead": ["read", "edit"], "Account": ["create"], "Contact": ["create"], "Opportunity": ["create"] } },
+    { "id": "u-viewer", "name": "Read-only viewer", "acl": { "Lead": ["read"] } },
+    { "id": "u-no-account", "name": "Rep without account rights", "acl": { "Lead": ["read", "edit"], "Contact": ["create"] } }
+  ],
+  "leads": [
+    { "id": "L-101", "name": "Ingrid Berg", "company": "Nordlys AS", "email": "ingrid@nordlys.example", "status": "New" },
+    { "id": "L-102", "name": "Jonas Lie", "company": "Fjordtech AS", "email": "jonas@fjordtech.example", "status": "New" }
+  ],
+  "Account": [{ "id": "A-1", "name": "Nordlys AS" }],
+  "Contact": [],
+  "Opportunity": []
+}
