@@ -1,0 +1,154 @@
+name: Daily Transparency Log
+
+on:
+  schedule:
+    # Run daily at 23:00 UTC
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date to publish (YYYY-MM-DD, default: today)'
+        required: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch full history for chain verification
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install PyNaCl
+      
+      - name: Determine date
+        id: date
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            echo "date=${{ github.event.inputs.date }}" >> $GITHUB_OUTPUT
+          else
+            echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Verify log integrity before publishing
+        run: |
+          # Check that no existing log entries have been modified
+          if [ -d "public-log" ] && [ "$(ls -A public-log/*.jsonl 2>/dev/null)" ]; then
+            echo "Checking for modifications to existing log entries..."
+            
+            # Get list of log files from HEAD
+            git ls-tree -r HEAD --name-only public-log/ | grep '\.jsonl$' > /tmp/head_logs.txt || true
+            
+            # For each log file, verify it hasn't been modified
+            while IFS= read -r log_file; do
+              if [ -f "$log_file" ]; then
+                # Get the file from HEAD
+                git show HEAD:"$log_file" > /tmp/head_version.jsonl 2>/dev/null || continue
+                
+                # Compare with current version
+                if ! diff -q /tmp/head_version.jsonl "$log_file" > /dev/null 2>&1; then
+                  echo "❌ ERROR: Log file $log_file has been modified!"
+                  echo "Existing log entries must never be changed (append-only)."
+                  exit 1
+                fi
+              fi
+            done < /tmp/head_logs.txt
+            
+            echo "✅ No existing log entries have been modified"
+          else
+            echo "No existing logs to verify (first run)"
+          fi
+      
+      - name: Collect and publish daily entry
+        env:
+          SIGNING_KEY: ${{ secrets.TRANSPARENCY_LOG_SIGNING_KEY }}
+        run: |
+          python3 transparency-log/publisher.py \
+            --date "${{ steps.date.outputs.date }}" \
+            --records-dir records \
+            --log-dir public-log \
+            --allow-empty
+      
+      - name: Verify chain integrity
+        run: |
+          # Verify the chain from first entry to today
+          FIRST_DATE=$(find public-log -name "*.jsonl" -exec head -n1 {} \; | jq -r .date | sort | head -n1)
+          LAST_DATE="${{ steps.date.outputs.date }}"
+          
+          if [ -n "$FIRST_DATE" ]; then
+            echo "Verifying chain from $FIRST_DATE to $LAST_DATE..."
+            python3 transparency-log/verify.py chain \
+              --log-dir public-log \
+              --start "$FIRST_DATE" \
+              --end "$LAST_DATE"
+          fi
+      
+      - name: Check for duplicate or backdated entries
+        run: |
+          # Ensure all entries are in chronological order and no duplicates
+          for log_file in public-log/*.jsonl; do
+            if [ -f "$log_file" ]; then
+              echo "Checking $log_file..."
+              
+              # Extract dates and check for duplicates
+              dates=$(jq -r .date "$log_file")
+              sorted_dates=$(echo "$dates" | sort)
+              unique_dates=$(echo "$dates" | sort -u)
+              
+              if [ "$dates" != "$sorted_dates" ]; then
+                echo "❌ ERROR: Entries in $log_file are not in chronological order!"
+                exit 1
+              fi
+              
+              if [ "$sorted_dates" != "$unique_dates" ]; then
+                echo "❌ ERROR: Duplicate dates found in $log_file!"
+                exit 1
+              fi
+            fi
+          done
+          
+          echo "✅ All entries are in chronological order with no duplicates"
+      
+      - name: Commit and push
+        run: |
+          git config user.name "Aarloven Transparency Log Bot"
+          git config user.email "transparency-log@aarloven.invalid"
+          
+          git add public-log/
+          
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Daily transparency log: ${{ steps.date.outputs.date }}
+            
+            Published by GitHub Actions
+            Workflow: ${{ github.workflow }}
+            Run: ${{ github.run_id }}"
+            
+            git push
+          fi
+      
+      - name: Summary
+        run: |
+          echo "✅ Transparency log entry published for ${{ steps.date.outputs.date }}"
+          
+          # Show the entry
+          YEAR="${{ steps.date.outputs.date }}"
+          YEAR="${YEAR:0:4}"
+          LOG_FILE="public-log/${YEAR}.jsonl"
+          
+          if [ -f "$LOG_FILE" ]; then
+            echo ""
+            echo "Entry details:"
+            grep "${{ steps.date.outputs.date }}" "$LOG_FILE" | jq .
+          fi
