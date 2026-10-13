@@ -221,7 +221,7 @@ class LogBuilder:
                     metadata={"file": countersign_file.name}
                 ))
         
-        # Collect KMS policy changes
+        # Collect KMS policy changes (legacy JSONL format)
         kms_log = record_path / "kms_policy_changes.jsonl"
         if kms_log.exists():
             with open(kms_log, 'r') as f:
@@ -237,6 +237,79 @@ class LogBuilder:
                             content_hash=content_hash,
                             metadata={"description": entry.get("description", "")}
                         ))
+        
+        # Collect KMS/IAM events from date-specific directory (new format)
+        date_dir = record_path / date
+        if date_dir.exists():
+            # Collect all KMS event records
+            for kms_file in sorted(date_dir.glob("kms_*.json")):
+                with open(kms_file, 'r') as f:
+                    kms_event = json.load(f)
+                
+                event_bytes = json.dumps(kms_event, sort_keys=True, separators=(',', ':')).encode('utf-8')
+                content_hash = hash_data(event_bytes)
+                
+                records.append(Record(
+                    record_type="kms_event",
+                    timestamp=kms_event.get("event_time", ""),
+                    content_hash=content_hash,
+                    metadata={
+                        "file": kms_file.name,
+                        "event_name": kms_event.get("event_name", ""),
+                        "resource_id": kms_event.get("resource_id", "")
+                    }
+                ))
+            
+            # Collect all IAM event records
+            for iam_file in sorted(date_dir.glob("iam_*.json")):
+                with open(iam_file, 'r') as f:
+                    iam_event = json.load(f)
+                
+                event_bytes = json.dumps(iam_event, sort_keys=True, separators=(',', ':')).encode('utf-8')
+                content_hash = hash_data(event_bytes)
+                
+                records.append(Record(
+                    record_type="iam_event",
+                    timestamp=iam_event.get("event_time", ""),
+                    content_hash=content_hash,
+                    metadata={
+                        "file": iam_file.name,
+                        "event_name": iam_event.get("event_name", ""),
+                        "resource_id": iam_event.get("resource_id", "")
+                    }
+                ))
+            
+            # Collect 'not connected' record if present
+            not_connected_file = date_dir / "not_connected.json"
+            if not_connected_file.exists():
+                with open(not_connected_file, 'r') as f:
+                    not_connected = json.load(f)
+                
+                nc_bytes = json.dumps(not_connected, sort_keys=True, separators=(',', ':')).encode('utf-8')
+                content_hash = hash_data(nc_bytes)
+                
+                records.append(Record(
+                    record_type="kms_not_connected",
+                    timestamp=not_connected.get("collected_at", ""),
+                    content_hash=content_hash,
+                    metadata={"status": not_connected.get("status", "")}
+                ))
+            
+            # Collect summary record (always present)
+            summary_file = date_dir / "summary.json"
+            if summary_file.exists():
+                with open(summary_file, 'r') as f:
+                    summary = json.load(f)
+                
+                summary_bytes = json.dumps(summary, sort_keys=True, separators=(',', ':')).encode('utf-8')
+                content_hash = hash_data(summary_bytes)
+                
+                records.append(Record(
+                    record_type="kms_summary",
+                    timestamp=summary.get("collected_at", ""),
+                    content_hash=content_hash,
+                    metadata={"total_events": summary.get("total_event_count", 0)}
+                ))
         
         # Collect manifest/PCR0 releases
         manifest_log = record_path / "manifest_releases.jsonl"
