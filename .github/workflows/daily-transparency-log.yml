@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write  # Required for AWS OIDC
     
     steps:
       - name: Checkout repository
@@ -29,7 +30,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install PyNaCl
+          pip install PyNaCl boto3
       
       - name: Determine date
         id: date
@@ -38,6 +39,33 @@ jobs:
             echo "date=${{ github.event.inputs.date }}" >> $GITHUB_OUTPUT
           else
             echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Configure AWS credentials
+        if: ${{ secrets.AWS_LOG_READER_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_LOG_READER_ROLE_ARN }}
+          aws-region: eu-north-1
+          role-session-name: transparency-log-collector
+      
+      - name: Collect KMS events
+        run: |
+          if [ -n "${{ secrets.AWS_LOG_READER_ROLE_ARN }}" ]; then
+            echo "Collecting KMS/IAM events from CloudTrail..."
+            python3 transparency-log/collect_kms_events.py \
+              --date "${{ steps.date.outputs.date }}" \
+              --output-dir records \
+              --kms-region eu-north-1 \
+              --iam-region us-east-1 \
+              --allow-not-connected
+          else
+            echo "⚠️  AWS_LOG_READER_ROLE_ARN secret not configured"
+            echo "Writing 'not connected' record..."
+            python3 transparency-log/collect_kms_events.py \
+              --date "${{ steps.date.outputs.date }}" \
+              --output-dir records \
+              --allow-not-connected
           fi
       
       - name: Verify log integrity before publishing
