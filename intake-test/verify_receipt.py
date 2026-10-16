@@ -31,7 +31,7 @@ def canon(obj) -> str:
 
 
 def cbor_decode(data: bytes):
-    """A small CBOR decoder: definite lengths only, which is all COSE and the Nitro document use."""
+    """A small CBOR decoder: definite lengths, plus indefinite-length maps/arrays (real NSM documents use them)."""
     def item(i):
         major, info = data[i] >> 5, data[i] & 31
         i += 1
@@ -41,6 +41,16 @@ def cbor_decode(data: bytes):
             n = 1 << (info - 24)
             val = int.from_bytes(data[i:i + n], "big")
             i += n
+        elif info == 31 and major in (4, 5):
+            out = [] if major == 4 else {}
+            while data[i] != 0xFF:
+                if major == 4:
+                    v, i = item(i)
+                    out.append(v)
+                else:
+                    k, i = item(i)
+                    out[k], i = item(i)
+            return out, i + 1
         else:
             raise ValueError("unsupported CBOR item")
         if major == 0:
