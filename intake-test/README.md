@@ -46,3 +46,11 @@ Locally: `python3 intake-test/test_local.py` (no AWS, no network).
 - `verify_receipt.py` validates the AWS certificate chain only when you pass the Nitro root certificate with `--root`. Fetching and pinning that root is a TODO, and so is the root's fingerprint check.
 - The image is not yet rebuilt twice to check that PCR0 is reproducible. The Dockerfile mirrors the root one, but it has not been built here (no Docker or nitro-cli was used).
 - Node.js stays in the image to keep the package set identical to the root Dockerfile. The intake program does not use it.
+
+## Reproducible build (2026-10-16)
+
+Two builds with the REBUILD.md recipe (AL2023, Docker 25.0.16, nitro-cli 1.5.0), second from a copy with different file times and permissions, both gave:
+
+    PCR0 b0d7bca68b9f7be48f94f6472e3033ebe23984eb6f735b8f2da32ab03df9d34030421a08c39ba088b24a8fbdba8f9c13
+
+`intake-test-key-policy.json` is the proposed policy for the test-only KMS key (RSA_4096, ENCRYPT_DECRYPT): only this PCR0 may decrypt; admins manage but cannot decrypt. Not created yet.
