@@ -1,0 +1,63 @@
+name: Reproducible build check
+# Builds the room twice with the REBUILD.md recipe (Docker 25.0.16 and nitro-cli 1.5.0 inside an
+# Amazon Linux 2023 container, each build with its own empty dockerd) and checks that both PCR0 values
+# match each other and EXPECTED_PCR0.txt. No AWS credentials, no secrets.
+on:
+  workflow_dispatch:
+  push:
+    paths: &room
+      - Dockerfile
+      - build.sh
+      - enclave_loop.py
+      - entrypoint.sh
+      - inputs.sha256
+      - kmstool_enclave_cli
+      - libnsm.so
+      - requirements.txt
+      - EXPECTED_PCR0.txt
+      - ci/**
+      - .github/workflows/repro-check.yml
+  pull_request:
+    paths: *room
+permissions:
+  contents: read
+jobs:
+  rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build host image (AL2023, Docker 25.0.16, nitro-cli 1.5.0)
+        run: docker build -t room-build-host -f ci/host.Dockerfile ci
+      - name: Build twice
+        run: |
+          set -euo pipefail
+          for i in a b; do
+            rm -rf "/tmp/src-$i" "/tmp/dockerdata-$i"; mkdir -p "/tmp/dockerdata-$i" out
+            cp -a "$GITHUB_WORKSPACE" "/tmp/src-$i"
+            if [ "$i" = b ]; then
+              # second copy: different file times and permissions, as in REBUILD.md
+              find "/tmp/src-$i" -type f -not -path '*/.git/*' -exec touch -d 2031-01-01 {} +
+              chmod -R g+w "/tmp/src-$i"
+            fi
+            docker run --rm --privileged -v "/tmp/dockerdata-$i:/var/lib/docker" \
+              -v "/tmp/src-$i:/w" -v "$PWD/out:/out" -e I=$i room-build-host bash -c '
+                set -e
+                (dockerd >/out/dockerd-$I.log 2>&1 &)
+                for t in $(seq 60); do docker info >/dev/null 2>&1 && break; sleep 1; done
+                echo "engine: $(docker version --format "{{.Server.Version}}")"
+                export NITRO_CLI_ARTIFACTS=/tmp/art; mkdir -p $NITRO_CLI_ARTIFACTS
+                cd /w && ./build.sh aarloven-room:local /out/room-$I.eif | tee /out/pcr-$I.txt'
+            sudo rm -rf "/tmp/dockerdata-$i"
+          done
+      - name: Compare PCR0
+        run: |
+          A=$(awk '/^PCR0/{print $2}' out/pcr-a.txt); B=$(awk '/^PCR0/{print $2}' out/pcr-b.txt)
+          E=$(tr -d '[:space:]' < EXPECTED_PCR0.txt)
+          echo "build a:  $A"; echo "build b:  $B"; echo "expected: $E"
+          { echo "| | PCR0 |"; echo "|---|---|"; echo "| build a | \`$A\` |"; echo "| build b | \`$B\` |"; echo "| expected | \`$E\` |"; } >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$A" ] || [ "$A" != "$B" ]; then
+            echo "::error::The two builds gave different PCR0 values: the room is not reproducible. Update /trust before shipping."; exit 1; fi
+          if [ "$A" != "$E" ]; then
+            echo "::error::PCR0 $A does not match EXPECTED_PCR0.txt ($E). Update /trust (and releases.json, the KMS key policy) before shipping."; exit 1; fi
+          echo "PCR0 reproduced and matches EXPECTED_PCR0.txt"
