@@ -462,7 +462,7 @@ def finish_v2(manifest_str, buyer_fp: str, fingerprint: str, info: dict, tests: 
         "dataset_fingerprint": fingerprint,  # re-derived from the decrypted rows; "" when the input was VOID before that
         "manifest_sha256": sha256_hex(manifest_str.encode()) if isinstance(manifest_str, str) else "",
         "buyer_pubkey_fp": buyer_fp,
-        "tables": info,
+        "tables": info if verdict != "VOID" else {},  # no per-table digests on a VOID intake (gpt-5 review, round 5)
         # `verdict` is the v2 name; `result` is kept with the same value so v1 readers still work
         "tests": [dict(t, verdict=t["result"]) for t in tests],
         "verdict": verdict,
