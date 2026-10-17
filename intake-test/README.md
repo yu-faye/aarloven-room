@@ -87,7 +87,7 @@ Offline, no docker. It builds the pusht SQLite from `/workspace/intake/raw` with
 
 ### What this does NOT do, and what is needed
 
-1. **New PCR0.** This branch (`room-intake-optin`) changes `intake_loop.py` again, so its PCR0 differs from PR #6's; it is recorded in the opt-in section below (OPTIN_PCR0_NOTE). **PR #6's tip (measured 2026-10-17, 18:13 Oslo):** `intake_loop.py` is copied into the image, so this change changes the test-room PCR0. Built twice on the box from commit `8ce21ad` with the REBUILD.md recipe (AL2023 host container, Docker 25.0.16, nitro-cli 1.5.0, each build in its own empty dockerd, the second from a copy with file times set to 2031 and group-write permissions):
+1. **New PCR0.** This branch (`room-intake-optin`) changes `intake_loop.py` again, so its PCR0 differs from PR #6's; it is recorded in the opt-in section below and in this branch's `EXPECTED_PCR0.txt`. **PR #6's tip (measured 2026-10-17, 18:13 Oslo):** `intake_loop.py` is copied into the image, so this change changes the test-room PCR0. Built twice on the box from commit `8ce21ad` with the REBUILD.md recipe (AL2023 host container, Docker 25.0.16, nitro-cli 1.5.0, each build in its own empty dockerd, the second from a copy with file times set to 2031 and group-write permissions):
 
        PCR0 7544b291e44d4654e418ae99b6211b807fc965acb2bb6eca7d26346a7502b0a82073c9fd0f42166740e9d4c39fa16e37
        PCR1 4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493
@@ -116,6 +116,16 @@ This is a format check. The room does not know the source database: it cannot te
 ### Receipt/2 additions
 
 `opt_in`, `legacy_policy` and `omitted_columns` (`{table: [{name, type, reason}]}`) are copied from the signed manifest into the receipt, plus a fixed `policy_note`; all are empty on a VOID receipt (the manifest was not validated). `verify_receipt.py` requires the fields and prints them. The room claims no more than the manifest says: **`opt_in.timestamp_tz.declared_zone` is the seller's word**, nothing verified it (the connector only forces its read session to UTC; the declared zone only says what zone the application used); the receipt says nothing about the content of omitted columns, and a fingerprint with omissions proves the supported columns only.
+
+### PCR0 of this branch (measured 2026-10-17, ~18:50 Oslo)
+
+Two builds of commit `901b310` with the same recipe as above (fresh dockerd each, second copy with other file times and permissions):
+
+    PCR0 2b24ad8b14c2866b6efa0702dc57751c94248364fcf94ede408b2e7a2748dcf0f4aa3d6279209fa32261895eae7876e0
+    PCR1 4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493
+    PCR2 f2b70f8e2015b89103e38b6e03db2ba50280c8d292c2e3f82364367027b57b387b2250959b56dfab7d4c51c4fbc20d1e
+
+Both identical. Any later change to `intake_loop.py` changes it again. Control: the same recipe on PR #5's tip `6c84a62` gave `b0d7bca6...` twice, the PCR0 measured on 2026-10-16 and pinned in the test key policy, so the box recipe matches the earlier one.
 
 ### Datasets other than pusht: verdict N/A
 
