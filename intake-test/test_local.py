@@ -17,12 +17,9 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
-from cryptography.x509.oid import NameOID
 
 TMP = tempfile.TemporaryDirectory()
 atexit.register(TMP.cleanup)
@@ -30,84 +27,24 @@ KEY_ID = "arn:aws:kms:eu-north-1:123456789012:key/11111111-2222-3333-4444-555555
 RSA_PRIV = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 PRIV_PATH = os.path.join(TMP.name, "kms_priv.pem")
 PUB_PATH = os.path.join(TMP.name, "kms_pub.der")
-FAKE_KMSTOOL = os.path.join(TMP.name, "fake_kmstool")
+
 with open(PRIV_PATH, "wb") as f:
     f.write(RSA_PRIV.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
 with open(PUB_PATH, "wb") as f:
     f.write(RSA_PRIV.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo))
-with open(FAKE_KMSTOOL, "w") as f:
-    f.write(f'''#!{sys.executable}
-import base64, os, sys
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
-a = sys.argv[1:]
-opt = {{a[i]: a[i + 1] for i in range(1, len(a) - 1) if a[i].startswith("--")}}
-if a[0] != "decrypt" or opt.get("--encryption-algorithm") != "RSAES_OAEP_SHA_256":
-    sys.exit("fake kmstool: bad invocation")
-if opt.get("--key-id") != os.environ["FAKE_KMS_KEY"]:
-    print("AccessDeniedException: key policy does not allow this enclave", file=sys.stderr); sys.exit(1)
-priv = serialization.load_pem_private_key(open(os.environ["FAKE_KMS_PRIV"], "rb").read(), None)
-try:
-    pt = priv.decrypt(base64.b64decode(opt["--ciphertext"]), padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
-except Exception:
-    print("InvalidCiphertextException", file=sys.stderr); sys.exit(1)
-print("PLAINTEXT: " + base64.b64encode(pt).decode())
-''')
-os.chmod(FAKE_KMSTOOL, stat.S_IRWXU)
-os.environ.update(KMSTOOL_CLI=FAKE_KMSTOOL, FAKE_KMS_KEY=KEY_ID, FAKE_KMS_PRIV=PRIV_PATH)
+import local_stubs  # noqa: E402
+FAKE_KMSTOOL = local_stubs.install_fake_kmstool(TMP.name, KEY_ID, PRIV_PATH)
 
 import buyer_seal  # noqa: E402
 import intake_loop  # noqa: E402
 import verify_receipt  # noqa: E402
 
-PCR0 = bytes(range(48))
+PCR0 = local_stubs.STUB_PCR0
 
 
-# ---------- a stubbed NSM: a COSE_Sign1 document signed by a throwaway P-384 chain ----------
-def cbor(v) -> bytes:
-    def head(major, n):
-        if n < 24:
-            return bytes([major << 5 | n])
-        for info, size in ((24, 1), (25, 2), (26, 4), (27, 8)):
-            if n < 1 << (8 * size):
-                return bytes([major << 5 | info]) + n.to_bytes(size, "big")
-    if isinstance(v, int):
-        return head(0, v)
-    if isinstance(v, bytes):
-        return head(2, len(v)) + v
-    if isinstance(v, str):
-        return head(3, len(v.encode())) + v.encode()
-    if isinstance(v, list):
-        return head(4, len(v)) + b"".join(cbor(x) for x in v)
-    return head(5, len(v)) + b"".join(cbor(k) + cbor(x) for k, x in v.items())
-
-
-def _cert(subject, key, issuer_name, issuer_key):
-    now = datetime.datetime.now(datetime.timezone.utc)
-    name = lambda cn: x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
-    return (x509.CertificateBuilder().subject_name(name(subject)).issuer_name(name(issuer_name)).public_key(key.public_key())
-            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
-            .not_valid_after(now + datetime.timedelta(days=1)).sign(issuer_key, hashes.SHA384()))
-
-
-ROOT_KEY, LEAF_KEY = ec.generate_private_key(ec.SECP384R1()), ec.generate_private_key(ec.SECP384R1())
-ROOT_CERT = _cert("test-root", ROOT_KEY, "test-root", ROOT_KEY)
-LEAF_CERT = _cert("test-leaf", LEAF_KEY, "test-root", ROOT_KEY)
-DER = lambda c: c.public_bytes(serialization.Encoding.DER)
-
-
-def fake_nsm_attest(user_data, nonce, public_key):
-    payload = cbor({"module_id": "i-test", "digest": "SHA384", "timestamp": int(datetime.datetime.now().timestamp() * 1000),
-                    "pcrs": {0: PCR0}, "certificate": DER(LEAF_CERT), "cabundle": [DER(ROOT_CERT)],
-                    "public_key": public_key, "user_data": user_data, "nonce": nonce})
-    protected = cbor({1: 0})  # alg label; the value is not checked by the verifier
-    to_sign = b"\x84\x6aSignature1" + verify_receipt.cbor_bstr_head(len(protected)) + protected \
-        + b"\x40" + verify_receipt.cbor_bstr_head(len(payload)) + payload
-    r, s = decode_dss_signature(LEAF_KEY.sign(to_sign, ec.ECDSA(hashes.SHA384())))
-    sig = r.to_bytes(48, "big") + s.to_bytes(48, "big")
-    return b"\xd2" + cbor([protected, {}, payload, sig])  # tag 18 + COSE_Sign1
-
-
+# ---------- a stubbed NSM (local_stubs.py): throwaway P-384 chain, module_id marks it as a STUB ----------
+fake_nsm_attest = local_stubs.fake_nsm_attest
+ROOT_CERT, DER = local_stubs.ROOT_CERT, local_stubs.DER
 intake_loop.nsm_attest = fake_nsm_attest
 
 
