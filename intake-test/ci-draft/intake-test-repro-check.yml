@@ -1,0 +1,91 @@
+name: Intake test room - reproducible build check
+# DRAFT (2026-10-17). Separate from repro-check.yml, which covers Room v6 only.
+# Builds the intake TEST room (intake-test/Dockerfile) twice with the REBUILD.md recipe (Docker 25.0.16 and
+# nitro-cli 1.5.0 in an Amazon Linux 2023 container, each build with its own empty dockerd, the second from a
+# copy with different file times and permissions), and checks:
+#   1. both PCR0 values are equal (reproducible);
+#   2. they equal intake-test/EXPECTED_PCR0.txt;
+#   3. the PCR0 pinned in intake-test/intake-test-key-policy.json equals intake-test/EXPECTED_PCR0.txt,
+#      so the proposed key policy cannot silently lag the image.
+# Also runs the local tests (no AWS, no network beyond pip). No AWS credentials, no secrets.
+on:
+  workflow_dispatch:
+  push:
+    paths: &testroom
+      - intake-test/Dockerfile
+      - intake-test/build.sh
+      - intake-test/intake_loop.py
+      - intake-test/entrypoint.sh
+      - intake-test/test_local.py
+      - intake-test/local_stubs.py
+      - intake-test/EXPECTED_PCR0.txt
+      - intake-test/intake-test-key-policy.json
+      - inputs.sha256
+      - kmstool_enclave_cli
+      - libnsm.so
+      - requirements.txt
+      - ci/host.Dockerfile
+      - .github/workflows/intake-test-repro-check.yml
+  pull_request:
+    paths: *testroom
+permissions:
+  contents: read
+jobs:
+  local-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - run: pip install cryptography
+      - run: python3 intake-test/test_local.py
+  key-policy-pin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Key policy pins the expected test-room PCR0
+        run: |
+          E=$(tr -d '[:space:]' < intake-test/EXPECTED_PCR0.txt)
+          P=$(python3 -c "import json,re;s=json.dumps(json.load(open('intake-test/intake-test-key-policy.json')));print(' '.join(sorted(set(re.findall(r'[0-9a-f]{96}',s)))))")
+          echo "expected: $E"; echo "policy:   $P"
+          if [ "$P" != "$E" ]; then
+            echo "::error::intake-test-key-policy.json pins PCR0 '$P', not EXPECTED_PCR0.txt '$E'. The real test KMS key policy must be updated (AWS change, needs Yufei's OK) before this image can decrypt."; exit 1; fi
+  rebuild:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build host image (AL2023, Docker 25.0.16, nitro-cli 1.5.0)
+        run: docker build -t room-build-host -f ci/host.Dockerfile ci
+      - name: Build twice
+        run: |
+          set -euo pipefail
+          for i in a b; do
+            rm -rf "/tmp/src-$i" "/tmp/dockerdata-$i"; mkdir -p "/tmp/dockerdata-$i" out
+            cp -a "$GITHUB_WORKSPACE" "/tmp/src-$i"
+            if [ "$i" = b ]; then
+              find "/tmp/src-$i" -type f -not -path '*/.git/*' -exec touch -d 2031-01-01 {} +
+              chmod -R g+w "/tmp/src-$i"
+            fi
+            docker run --rm --privileged -v "/tmp/dockerdata-$i:/var/lib/docker" \
+              -v "/tmp/src-$i:/w" -v "$PWD/out:/out" -e I=$i room-build-host bash -c '
+                set -eo pipefail
+                (dockerd >/out/dockerd-$I.log 2>&1 &)
+                for t in $(seq 60); do docker info >/dev/null 2>&1 && break; sleep 1; done
+                echo "engine: $(docker version --format "{{.Server.Version}}")"
+                export NITRO_CLI_ARTIFACTS=/tmp/art; mkdir -p $NITRO_CLI_ARTIFACTS
+                cd /w && bash intake-test/build.sh aarloven-intake-test:local /out/intake-$I.eif | tee /out/pcr-$I.txt'
+            sudo rm -rf "/tmp/dockerdata-$i"
+          done
+      - name: Compare PCR0
+        run: |
+          A=$(awk '/^PCR0/{print $2}' out/pcr-a.txt); B=$(awk '/^PCR0/{print $2}' out/pcr-b.txt)
+          E=$(tr -d '[:space:]' < intake-test/EXPECTED_PCR0.txt)
+          echo "build a:  $A"; echo "build b:  $B"; echo "expected: $E"
+          { echo "| | test-room PCR0 |"; echo "|---|---|"; echo "| build a | \`$A\` |"; echo "| build b | \`$B\` |"; echo "| expected | \`$E\` |"; } >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$A" ] || [ "$A" != "$B" ]; then echo "::error::The two test-room builds differ: not reproducible."; exit 1; fi
+          if [ "$A" != "$E" ]; then echo "::error::Test-room PCR0 $A does not match intake-test/EXPECTED_PCR0.txt ($E)."; exit 1; fi
+          echo "Test-room PCR0 reproduced and matches intake-test/EXPECTED_PCR0.txt"
