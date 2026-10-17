@@ -1,0 +1,684 @@
+{
+ "runs": [
+  {
+   "connector_fingerprint": "7a2e31aeab0f0e434324e9574c5873244fca83be801684b3406aba7ad9c0f603",
+   "connector_flags": [
+    "--timestamp-tz",
+    "UTC",
+    "--enum-set-as",
+    "text",
+    "--binary-as",
+    "sha256",
+    "--year-as",
+    "int",
+    "--geometry-as",
+    "wkb-sha256",
+    "--geometry-storage",
+    "mysql-srid-wkb"
+   ],
+   "database": "sakila",
+   "fingerprints_equal": true,
+   "label": "sakila-A-geometry",
+   "left_out": {},
+   "logical_types_seen": [
+    "binary:sha256",
+    "bool",
+    "char:20",
+    "dec:4,2",
+    "dec:5,2",
+    "enum:text",
+    "geometry:wkb-sha256",
+    "int",
+    "set:text",
+    "text",
+    "timestamp:0",
+    "year"
+   ],
+   "receipt_omitted_columns": {},
+   "receipt_opt_in": {
+    "binary_as": "sha256",
+    "enum_set_as": "text",
+    "geometry": {
+     "as": "wkb-sha256",
+     "columns": {
+      "address": [
+       "location"
+      ]
+     },
+     "storage": "mysql-srid-wkb"
+    },
+    "timestamp_tz": {
+     "columns": {
+      "actor": [
+       "last_update"
+      ],
+      "address": [
+       "last_update"
+      ],
+      "category": [
+       "last_update"
+      ],
+      "city": [
+       "last_update"
+      ],
+      "country": [
+       "last_update"
+      ],
+      "customer": [
+       "last_update"
+      ],
+      "film": [
+       "last_update"
+      ],
+      "film_actor": [
+       "last_update"
+      ],
+      "film_category": [
+       "last_update"
+      ],
+      "inventory": [
+       "last_update"
+      ],
+      "language": [
+       "last_update"
+      ],
+      "payment": [
+       "last_update"
+      ],
+      "rental": [
+       "last_update"
+      ],
+      "staff": [
+       "last_update"
+      ],
+      "store": [
+       "last_update"
+      ]
+     },
+     "declared_zone": "UTC",
+     "read_session_zone": "+00:00"
+    },
+    "year_as": "int"
+   },
+   "room_fingerprint": "7a2e31aeab0f0e434324e9574c5873244fca83be801684b3406aba7ad9c0f603",
+   "room_verdict": "N/A",
+   "server_version": "5.7.44",
+   "tables_in_database": 16,
+   "tables_in_receipt": 16,
+   "target": "my57"
+  },
+  {
+   "connector_fingerprint": "d0bf96170890e05501c954b552f512bc2318f982a027b3b16ee08ca3247e28ec",
+   "connector_flags": [
+    "--timestamp-tz",
+    "UTC",
+    "--enum-set-as",
+    "text",
+    "--binary-as",
+    "sha256",
+    "--year-as",
+    "int",
+    "--omit-unsupported"
+   ],
+   "database": "sakila",
+   "fingerprints_equal": true,
+   "label": "sakila-B-omit",
+   "left_out": {},
+   "logical_types_seen": [
+    "binary:sha256",
+    "bool",
+    "char:20",
+    "dec:4,2",
+    "dec:5,2",
+    "enum:text",
+    "int",
+    "set:text",
+    "text",
+    "timestamp:0",
+    "year"
+   ],
+   "receipt_omitted_columns": {
+    "address": [
+     "location"
+    ]
+   },
+   "receipt_opt_in": {
+    "binary_as": "sha256",
+    "enum_set_as": "text",
+    "omit_unsupported": true,
+    "timestamp_tz": {
+     "columns": {
+      "actor": [
+       "last_update"
+      ],
+      "address": [
+       "last_update"
+      ],
+      "category": [
+       "last_update"
+      ],
+      "city": [
+       "last_update"
+      ],
+      "country": [
+       "last_update"
+      ],
+      "customer": [
+       "last_update"
+      ],
+      "film": [
+       "last_update"
+      ],
+      "film_actor": [
+       "last_update"
+      ],
+      "film_category": [
+       "last_update"
+      ],
+      "inventory": [
+       "last_update"
+      ],
+      "language": [
+       "last_update"
+      ],
+      "payment": [
+       "last_update"
+      ],
+      "rental": [
+       "last_update"
+      ],
+      "staff": [
+       "last_update"
+      ],
+      "store": [
+       "last_update"
+      ]
+     },
+     "declared_zone": "UTC",
+     "read_session_zone": "+00:00"
+    },
+    "year_as": "int"
+   },
+   "room_fingerprint": "d0bf96170890e05501c954b552f512bc2318f982a027b3b16ee08ca3247e28ec",
+   "room_verdict": "N/A",
+   "server_version": "5.7.44",
+   "tables_in_database": 16,
+   "tables_in_receipt": 16,
+   "target": "my57"
+  },
+  {
+   "connector_fingerprint": "7a2e31aeab0f0e434324e9574c5873244fca83be801684b3406aba7ad9c0f603",
+   "connector_flags": [
+    "--timestamp-tz",
+    "UTC",
+    "--enum-set-as",
+    "text",
+    "--binary-as",
+    "sha256",
+    "--year-as",
+    "int",
+    "--geometry-as",
+    "wkb-sha256",
+    "--geometry-storage",
+    "mysql-srid-wkb"
+   ],
+   "database": "sakila",
+   "fingerprints_equal": true,
+   "label": "sakila-A-geometry",
+   "left_out": {},
+   "logical_types_seen": [
+    "binary:sha256",
+    "bool",
+    "char:20",
+    "dec:4,2",
+    "dec:5,2",
+    "enum:text",
+    "geometry:wkb-sha256",
+    "int",
+    "set:text",
+    "text",
+    "timestamp:0",
+    "year"
+   ],
+   "receipt_omitted_columns": {},
+   "receipt_opt_in": {
+    "binary_as": "sha256",
+    "enum_set_as": "text",
+    "geometry": {
+     "as": "wkb-sha256",
+     "columns": {
+      "address": [
+       "location"
+      ]
+     },
+     "storage": "mysql-srid-wkb"
+    },
+    "timestamp_tz": {
+     "columns": {
+      "actor": [
+       "last_update"
+      ],
+      "address": [
+       "last_update"
+      ],
+      "category": [
+       "last_update"
+      ],
+      "city": [
+       "last_update"
+      ],
+      "country": [
+       "last_update"
+      ],
+      "customer": [
+       "last_update"
+      ],
+      "film": [
+       "last_update"
+      ],
+      "film_actor": [
+       "last_update"
+      ],
+      "film_category": [
+       "last_update"
+      ],
+      "inventory": [
+       "last_update"
+      ],
+      "language": [
+       "last_update"
+      ],
+      "payment": [
+       "last_update"
+      ],
+      "rental": [
+       "last_update"
+      ],
+      "staff": [
+       "last_update"
+      ],
+      "store": [
+       "last_update"
+      ]
+     },
+     "declared_zone": "UTC",
+     "read_session_zone": "+00:00"
+    },
+    "year_as": "int"
+   },
+   "room_fingerprint": "7a2e31aeab0f0e434324e9574c5873244fca83be801684b3406aba7ad9c0f603",
+   "room_verdict": "N/A",
+   "server_version": "8.4.11",
+   "tables_in_database": 16,
+   "tables_in_receipt": 16,
+   "target": "my84"
+  },
+  {
+   "connector_fingerprint": "d0bf96170890e05501c954b552f512bc2318f982a027b3b16ee08ca3247e28ec",
+   "connector_flags": [
+    "--timestamp-tz",
+    "UTC",
+    "--enum-set-as",
+    "text",
+    "--binary-as",
+    "sha256",
+    "--year-as",
+    "int",
+    "--omit-unsupported"
+   ],
+   "database": "sakila",
+   "fingerprints_equal": true,
+   "label": "sakila-B-omit",
+   "left_out": {},
+   "logical_types_seen": [
+    "binary:sha256",
+    "bool",
+    "char:20",
+    "dec:4,2",
+    "dec:5,2",
+    "enum:text",
+    "int",
+    "set:text",
+    "text",
+    "timestamp:0",
+    "year"
+   ],
+   "receipt_omitted_columns": {
+    "address": [
+     "location"
+    ]
+   },
+   "receipt_opt_in": {
+    "binary_as": "sha256",
+    "enum_set_as": "text",
+    "omit_unsupported": true,
+    "timestamp_tz": {
+     "columns": {
+      "actor": [
+       "last_update"
+      ],
+      "address": [
+       "last_update"
+      ],
+      "category": [
+       "last_update"
+      ],
+      "city": [
+       "last_update"
+      ],
+      "country": [
+       "last_update"
+      ],
+      "customer": [
+       "last_update"
+      ],
+      "film": [
+       "last_update"
+      ],
+      "film_actor": [
+       "last_update"
+      ],
+      "film_category": [
+       "last_update"
+      ],
+      "inventory": [
+       "last_update"
+      ],
+      "language": [
+       "last_update"
+      ],
+      "payment": [
+       "last_update"
+      ],
+      "rental": [
+       "last_update"
+      ],
+      "staff": [
+       "last_update"
+      ],
+      "store": [
+       "last_update"
+      ]
+     },
+     "declared_zone": "UTC",
+     "read_session_zone": "+00:00"
+    },
+    "year_as": "int"
+   },
+   "room_fingerprint": "d0bf96170890e05501c954b552f512bc2318f982a027b3b16ee08ca3247e28ec",
+   "room_verdict": "N/A",
+   "server_version": "8.4.11",
+   "tables_in_database": 16,
+   "tables_in_receipt": 16,
+   "target": "my84"
+  },
+  {
+   "connector_fingerprint": "e413741681d6edebe0a5003c92293e2d65d0ac55d766bf84b74ce077ca8733d8",
+   "connector_flags": [
+    "--binary-as",
+    "sha256"
+   ],
+   "database": "northwind",
+   "fingerprints_equal": true,
+   "label": "northwind-sha256",
+   "left_out": {
+    "Order Details": "table name is not a plain identifier (the seal gate and the room accept only [A-Za-z_][A-Za-z0-9_]*)"
+   },
+   "logical_types_seen": [
+    "binary:sha256",
+    "bool",
+    "char:10",
+    "char:5",
+    "char:50",
+    "dec:19,4",
+    "int",
+    "text",
+    "timestamp:3"
+   ],
+   "receipt_omitted_columns": {},
+   "receipt_opt_in": {
+    "binary_as": "sha256"
+   },
+   "room_fingerprint": "e413741681d6edebe0a5003c92293e2d65d0ac55d766bf84b74ce077ca8733d8",
+   "room_verdict": "N/A",
+   "server_version": "16.0.4305.5",
+   "tables_in_database": 13,
+   "tables_in_receipt": 12,
+   "target": "ms22"
+  },
+  {
+   "connector_fingerprint": "1c18ee10ff9abdf0cd4aec81da98796bbeb7f7d4d7b24c45782f44042b3bc50b",
+   "connector_flags": [
+    "--binary-as",
+    "hex"
+   ],
+   "database": "northwind",
+   "fingerprints_equal": true,
+   "label": "northwind-hex",
+   "left_out": {
+    "Categories": "BINARY_TOO_LARGE_FOR_HEX (10746 bytes > 4096; use --binary-as sha256)",
+    "Employees": "BINARY_TOO_LARGE_FOR_HEX (21626 bytes > 4096; use --binary-as sha256)",
+    "Order Details": "table name is not a plain identifier (the seal gate and the room accept only [A-Za-z_][A-Za-z0-9_]*)"
+   },
+   "logical_types_seen": [
+    "bool",
+    "char:10",
+    "char:5",
+    "char:50",
+    "dec:19,4",
+    "int",
+    "text",
+    "timestamp:3"
+   ],
+   "receipt_omitted_columns": {},
+   "receipt_opt_in": {
+    "binary_as": "hex"
+   },
+   "room_fingerprint": "1c18ee10ff9abdf0cd4aec81da98796bbeb7f7d4d7b24c45782f44042b3bc50b",
+   "room_verdict": "N/A",
+   "server_version": "16.0.4305.5",
+   "tables_in_database": 13,
+   "tables_in_receipt": 10,
+   "target": "ms22"
+  },
+  {
+   "connector_fingerprint": "6d2da0c39fcb585cd5638914f43c758484c040e4ee0fbab7451d6a285fe5f0f9",
+   "connector_flags": [
+    "--binary-as",
+    "sha256"
+   ],
+   "database": "pubs",
+   "fingerprints_equal": true,
+   "label": "pubs-sha256",
+   "left_out": {},
+   "logical_types_seen": [
+    "binary:sha256",
+    "bool",
+    "char:1",
+    "char:10",
+    "char:11",
+    "char:12",
+    "char:2",
+    "char:4",
+    "char:5",
+    "char:6",
+    "dec:19,4",
+    "dec:4,2",
+    "int",
+    "text",
+    "timestamp:3"
+   ],
+   "receipt_omitted_columns": {},
+   "receipt_opt_in": {
+    "binary_as": "sha256"
+   },
+   "room_fingerprint": "6d2da0c39fcb585cd5638914f43c758484c040e4ee0fbab7451d6a285fe5f0f9",
+   "room_verdict": "N/A",
+   "server_version": "16.0.4305.5",
+   "tables_in_database": 11,
+   "tables_in_receipt": 11,
+   "target": "ms22"
+  },
+  {
+   "connector_fingerprint": "ccf51466689063f1345ed7f80034ffb188ed25a2cbf7c998fe95ec1cf2b205e0",
+   "connector_flags": [
+    "--binary-as",
+    "hex"
+   ],
+   "database": "pubs",
+   "fingerprints_equal": true,
+   "label": "pubs-hex",
+   "left_out": {},
+   "logical_types_seen": [
+    "binary:hex",
+    "bool",
+    "char:1",
+    "char:10",
+    "char:11",
+    "char:12",
+    "char:2",
+    "char:4",
+    "char:5",
+    "char:6",
+    "dec:19,4",
+    "dec:4,2",
+    "int",
+    "text",
+    "timestamp:3"
+   ],
+   "receipt_omitted_columns": {},
+   "receipt_opt_in": {
+    "binary_as": "hex"
+   },
+   "room_fingerprint": "ccf51466689063f1345ed7f80034ffb188ed25a2cbf7c998fe95ec1cf2b205e0",
+   "room_verdict": "N/A",
+   "server_version": "16.0.4305.5",
+   "tables_in_database": 11,
+   "tables_in_receipt": 11,
+   "target": "ms22"
+  }
+ ],
+ "sakila_A_57_equals_84": true,
+ "stub": "local replay: stub NSM, fake kmstool, NOT an enclave; no PCR0 is claimed",
+ "tamper": [
+  {
+   "as_expected": true,
+   "case": "opt_in declared_zone edited, re-signed",
+   "reason": "manifest: dataset_fingerprint is not the SHA-256 of its neutral manifest",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "declared_zone edited, fingerprint recomputed, re-signed",
+   "reason": "table actor: does not decrypt (InvalidTag); changed ciphertext or a different table, fingerprint or canon id in the AAD",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "enum label not declared (film.rating = 'NC-18')",
+   "reason": "table film: line 1 column rating: malformed value (enum value is not one of the declared labels)",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "set members not sorted (film.special_features)",
+   "reason": "table film: line 16 column special_features: malformed value (set members are not unique and sorted by code point)",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "set member not declared",
+   "reason": "table film: line 1 column special_features: malformed value (set member is not one of the declared labels)",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "malformed geometry (address.location without len)",
+   "reason": "table address: line 1 column location: malformed value (geometry value is not {srid (uint32), len (>= 9), sha256})",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "malformed geometry (sha256 63 chars)",
+   "reason": "table address: line 1 column location: malformed value (geometry value is not {srid (uint32), len (>= 9), sha256})",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "binary sha256 wrong length (staff.picture)",
+   "reason": "table staff: line 1 column picture: malformed value (binary:sha256 value is not {len, sha256})",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "year out of range (film.release_year = 1800)",
+   "reason": "table film: line 1 column release_year: malformed value (year is not an integer in 1901..2155)",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "timestamp with an offset (actor.last_update)",
+   "reason": "table actor: line 1 column last_update: malformed value (timestamp is not canonical UTC YYYY-MM-DDTHH:MM:SSZ with exactly 0 fractional digits)",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "unknown logical type (film.title -> text:utf8)",
+   "reason": "unknown logical type 'text:utf8'",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "unknown opt_in key",
+   "reason": "manifest: unknown opt_in key(s) ['json_as']",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "geometry opt_in dropped but geometry column kept",
+   "reason": "manifest: opt_in.geometry.columns must list exactly the geometry:wkb-sha256 columns",
+   "run": "my84/sakila-A-geometry",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "omitted column (address.location) present in the rows",
+   "reason": "table address: line 1 has column(s) ['location'] not in the manifest",
+   "run": "my84/sakila-B-omit",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "omission flag dropped while columns are listed omitted",
+   "reason": "manifest: table address has omitted_columns but opt_in.omit_unsupported is not set",
+   "run": "my84/sakila-B-omit",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "binary sha256 uppercase (Categories.Picture)",
+   "reason": "table Categories: line 1 column Picture: malformed value (binary:sha256 value is not {len, sha256})",
+   "run": "ms22/northwind-sha256",
+   "verdict": "VOID"
+  },
+  {
+   "as_expected": true,
+   "case": "binary:hex declared under opt_in.binary_as=sha256",
+   "reason": "manifest: table Categories column Picture is binary:hex but opt_in.binary_as is 'sha256'",
+   "run": "ms22/northwind-sha256",
+   "verdict": "VOID"
+  }
+ ]
+}
