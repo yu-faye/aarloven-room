@@ -127,6 +127,14 @@ Two builds of commit `901b310` with the same recipe as above (fresh dockerd each
 
 Both identical. Any later change to `intake_loop.py` changes it again. Control: the same recipe on PR #5's tip `6c84a62` gave `b0d7bca6...` twice, the PCR0 measured on 2026-10-16 and pinned in the test key policy, so the box recipe matches the earlier one.
 
+### PCR0 after the kmstool-tail fix (branch room-intake-kms-tail, measured 2026-10-17 ~20:20 Oslo)
+
+`kms_decrypt_room_key` now puts the TAIL of kmstool's output in the VOID text, without its `[INFO]/[DEBUG]/[TRACE]` log lines, so a KMS refusal (AccessDeniedException) is visible. The 2026-10-17 real debug-mode reply showed only INFO lines because the first 400 characters were kept. Two builds of commit `08caf95` (same recipe):
+
+    PCR0 22248f584ea2bf92a7aabe3f5587631c815439293b01bc7e8a1baa62c75d0e0405b6670c9ac2f7791b473a628ab4bce1
+
+Both identical; `EXPECTED_PCR0.txt` is updated. **Before the next real run the test key must be re-pinned**: the live test key policy (key `eb2d8fbd...`) pins `2b24ad8b...` since 2026-10-17 19:47 Oslo (the copy in `intake-test-key-policy.json` still shows the older `b0d7bca6...`). With this image and the current key policy, KMS refuses the key, and every real run is VOID.
+
 ### Datasets other than pusht: verdict N/A
 
 T1 to T4 are defined for the pusht schema (tables `frames` and `episodes`). For any other dataset (Sakila, Northwind, pubs, ...) the room still opens, checks and re-derives everything, then reports one test `TX` with result/verdict **`N/A`** ("no applicable test") and overall verdict **`N/A`**. It is never PASS: the receipt then proves the dataset fingerprint (and the policies) only. A dataset with only one of the two tables is also N/A. pusht behaviour is unchanged: the full intake still gives FAIL (T4 0/206) and fingerprint `06a0fb07...`. One deliberate change: a row that lacks a column the signed manifest declares is now VOID (before: T1 FAIL), because for tables the tests do not cover there is no test that would otherwise notice; T1 still FAILs when the manifest itself lacks an expected `frames` column.
