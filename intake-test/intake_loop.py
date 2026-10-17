@@ -108,6 +108,20 @@ def nsm_attest(user_data: bytes, nonce: bytes, public_key: bytes) -> bytes:
     return bytes(buf[: size.value])
 
 
+def kmstool_error_text(out: str, limit: int = 400) -> str:
+    """The part of kmstool's output that says why it failed, at most `limit` characters.
+
+    kmstool logs many [INFO]/[DEBUG]/[TRACE] lines (event loop, DNS, ...) before the real error (e.g. KMS
+    AccessDeniedException), so the first 400 characters showed only INFO noise (real run 2026-10-17, debug-mode reply).
+    Drop those log lines and keep the TAIL; if nothing else is left, keep the tail of the whole output."""
+    text = (out or "").strip()
+    if not text:
+        return "kmstool_decrypt_failed"
+    kept = [l for l in text.splitlines() if l.strip() and not re.match(r"^\[(INFO|DEBUG|TRACE)\]", l.strip())]
+    msg = "\n".join(kept) if kept else text
+    return msg[-limit:]
+
+
 def kms_decrypt_room_key(creds: dict, wrapped_b64: str, key_id: str = None, algorithm: str = None) -> bytes:
     """Decrypt a KMS-wrapped key inside enclave. Plaintext stays local."""
     cmd = [
@@ -124,8 +138,7 @@ def kms_decrypt_room_key(creds: dict, wrapped_b64: str, key_id: str = None, algo
         cmd += ["--key-id", key_id, "--encryption-algorithm", algorithm]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "kmstool_decrypt_failed").strip()[:400]
-        raise RuntimeError(f"kmstool_decrypt_failed:{err}")
+        raise RuntimeError(f"kmstool_decrypt_failed:{kmstool_error_text(proc.stderr or proc.stdout)}")
     plaintext_b64 = None
     for line in (proc.stdout or "").splitlines():
         if line.startswith("PLAINTEXT:"):

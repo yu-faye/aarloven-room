@@ -799,5 +799,42 @@ class EvidenceTests(unittest.TestCase):
         self.assertTrue(res["pcr0"].startswith("b0d7bca6"))
 
 
+    def test_saved_real_r7_receipts_still_verify_offline(self):
+        d = os.path.join(HERE, "evidence", "2026-10-17-r7-real-run")
+        root = read(os.path.join(HERE, "evidence", "nitro-root-G1.pem"))
+        want = {"reply-good.json": "PASS", "reply-tampered.json": "VOID", "reply-debug.json": "VOID"}
+        for name, verdict in want.items():
+            with open(os.path.join(d, name)) as f:
+                res = verify_receipt.verify_reply(json.load(f), root)
+            self.assertEqual((res["format"], res["verdict"], res["chain_validated"], res["stub"]),
+                             ("aarloven-intake-test-receipt/2", verdict, True, False), name)
+            self.assertTrue(res["pcr0"].startswith("0" * 96 if name == "reply-debug.json" else "2b24ad8b"), name)
+
+
+class KmstoolErrorTextTests(unittest.TestCase):
+    INFO = "[INFO] [2026-10-17T17:52:22Z] [00007f44f8139c80] [event-loop] - id=0x2d34d20: Starting event-loop thread."
+
+    def test_error_after_info_noise_is_kept(self):
+        out = "\n".join([self.INFO] * 20 + ["[ERROR] [x] kms decrypt failed", "AccessDeniedException: not allowed"])
+        t = intake_loop.kmstool_error_text(out)
+        self.assertIn("AccessDeniedException", t)
+        self.assertNotIn("[INFO]", t)
+        self.assertLessEqual(len(t), 400)
+
+    def test_only_info_keeps_tail_and_limit(self):
+        out = "\n".join([self.INFO] * 20 + [self.INFO.replace("Starting", "LAST")])
+        t = intake_loop.kmstool_error_text(out)
+        self.assertTrue(t.endswith("LAST event-loop thread."))
+        self.assertEqual(len(t), 400)
+
+    def test_empty(self):
+        self.assertEqual(intake_loop.kmstool_error_text(""), "kmstool_decrypt_failed")
+        self.assertEqual(intake_loop.kmstool_error_text(None), "kmstool_decrypt_failed")
+
+    def test_long_error_keeps_end(self):
+        t = intake_loop.kmstool_error_text("x" * 1000 + "AccessDeniedException")
+        self.assertTrue(t.endswith("AccessDeniedException")); self.assertEqual(len(t), 400)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
