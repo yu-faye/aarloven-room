@@ -90,7 +90,7 @@ def main():
         dek = AESGCM(kek).decrypt(wrapped[:12], wrapped[12:], f"fourdb-seal-1-dek|{canon}|{fp0}".encode())
         rows = {}
         for t in man["neutral_manifest"]["tables"]:
-            blob = read(os.path.join(folder, "sealed", t + ".jsonl.sealed"))
+            blob = read(os.path.join(folder, buyer_seal_canon2.sealed_relpath(t)))
             plain = AESGCM(dek).decrypt(blob[:12], blob[12:], f"fourdb-seal-1|{canon}|{fp0}|{t}".encode()).decode()
             rows[t] = [json.loads(l) for l in plain.split("\n")[:-1]]
         neutral = man["neutral_manifest"]
@@ -135,6 +135,7 @@ def main():
         r, res = run(req)
         check(r["dataset_fingerprint"] == e["connector_fingerprint"] == man["dataset_fingerprint"], f"room fingerprint == connector fingerprint ({r['dataset_fingerprint'][:16]}...)")
         check(r["verdict"] == "N/A" and [t["id"] for t in r["tests"]] == ["TX"], "verdict N/A with the single test TX (no pusht tables), not PASS")
+        check(sorted(r["tables"]) == sorted(neutral["tables"]) == sorted(e["tables"]), "receipt lists exactly the table names of the manifest (spaces and all)")
         check(all(r["tables"][t]["sha256"] == m["sha256"] and r["tables"][t]["rows"] == m["rows"] for t, m in neutral["tables"].items()), "per-table digests and row counts re-derived == connector's")
         check(r["opt_in"] == neutral.get("opt_in", {}) and r["omitted_columns"] == {t: m["omitted_columns"] for t, m in neutral["tables"].items() if "omitted_columns" in m},
               "receipt opt_in / omitted_columns == the signed manifest's")
@@ -151,6 +152,10 @@ def main():
         check(len(e["tables"]) == 16 and not e["left_out"], f"{e['target']} sakila-A: 16/16 tables with the five type policies incl. geometry")
         man = json.loads(read(os.path.join(e["dir"], "manifest.json")))["neutral_manifest"]
         check("geometry:wkb-sha256" in man["tables"]["address"]["columns"].values() and "geometry" in man["opt_in"] and "omit_unsupported" not in man["opt_in"], f"{e['target']} sakila-A: address.location read as geometry, nothing omitted")
+    for e in [e for e in index if e["label"] == "northwind-sha256"]:
+        check(len(e["tables"]) == 13 and not e["left_out"] and "Order Details" in e["tables"], f"{e['target']} northwind-sha256: 13/13 tables including \"Order Details\" (was 12/13)")
+    for e in [e for e in index if e["label"] == "northwind-hex"]:
+        check(len(e["tables"]) == 11 and "Order Details" in e["tables"] and sorted(e["left_out"]) == ["Categories", "Employees"], f"{e['target']} northwind-hex: 11/13, \"Order Details\" in, only the two image tables left out (was 10/13)")
     for e in [e for e in index if e["label"] == "sakila-B-omit"]:
         man = json.loads(read(os.path.join(e["dir"], "manifest.json")))["neutral_manifest"]
         om = man["tables"]["address"].get("omitted_columns", [])
@@ -216,6 +221,18 @@ def main():
     if ms:
         pic = next((t, c) for t, m in json.loads(read(os.path.join(ms["dir"], "manifest.json")))["neutral_manifest"]["tables"].items() for c, lt in m["columns"].items() if lt == "binary:sha256")
         tamper(ms, "binary sha256 uppercase (%s.%s)" % pic, set_first(pic[0], pic[1], {"len": 3, "sha256": SHA.upper()}), "binary:sha256 value")
+        def rename_table(n, rows):
+            n["tables"]["Order\tDetails"] = n["tables"].pop("Order Details")
+            rows["Order\tDetails"] = rows.pop("Order Details")
+
+        def rename_column(n, rows):
+            n["tables"]["Order Details"]["columns"]["Quantity\u0301"] = n["tables"]["Order Details"]["columns"].pop("Quantity")
+            for row in rows["Order Details"]:
+                row["Quantity\u0301"] = row.pop("Quantity")
+
+        if "Order Details" in json.loads(read(os.path.join(ms["dir"], "manifest.json")))["neutral_manifest"]["tables"]:
+            tamper(ms, "table \"Order Details\" renamed with a TAB (control character)", rename_table, "table name")
+            tamper(ms, "column Quantity renamed to a non-NFC spelling", rename_column, "column name")
         tamper(ms, "binary:hex declared under opt_in.binary_as=sha256", lambda n, rows: n["tables"][pic[0]]["columns"].update({pic[1]: "binary:hex"}), "opt_in.binary_as")
 
     if a.save:
