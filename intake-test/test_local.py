@@ -482,8 +482,8 @@ def build_sealed(neutral, lines_by, raw=None):
     for t, ls in lines_by.items():
         n, plain = os.urandom(12), raw.get(t, "".join(l + "\n" for l in ls).encode())
         blob = n + AESGCM(dek).encrypt(n, plain, f"fourdb-seal-1|{neutral['canon']}|{fp}|{t}".encode())
-        write(os.path.join(folder, "sealed", t + ".jsonl.sealed"), blob)
-        tabs[t] = {"file": f"sealed/{t}.jsonl.sealed", "sealed_sha256": hashlib.sha256(blob).hexdigest(), "plaintext_bytes": 0}
+        write(os.path.join(folder, buyer_seal_canon2.sealed_relpath(t)), blob)
+        tabs[t] = {"file": buyer_seal_canon2.sealed_relpath(t), "sealed_sha256": hashlib.sha256(blob).hexdigest(), "plaintext_bytes": 0}
     n = os.urandom(12)
     write(os.path.join(folder, "sealed", "dek.wrapped"), n + AESGCM(KEK).encrypt(n, dek, f"fourdb-seal-1-dek|{neutral['canon']}|{fp}".encode()))
     man = {"engine": "mysql", "exported_at": "2026-10-17T00:00:00+00:00", "mode": "sealed", "dataset_fingerprint": fp, "neutral_manifest": neutral,
@@ -788,6 +788,129 @@ class OptInTests(Canon2Tests):
 for _name in [n for n in dir(Canon2Tests) if n.startswith("test_")]:
     if _name not in OptInTests.__dict__:
         setattr(OptInTests, _name, None)
+
+
+# ---------- quoted identifiers (fourdb CANON.md s11): table and column names with spaces, quotes, non-ASCII ... ----------
+IDENT_VECTORS = json.load(open(os.path.join(HERE, "ident_vectors.json")))
+
+
+def vname(v):
+    return v["name"] if "name" in v else v["repeat"][0] * v["repeat"][1]
+
+
+NAME_TABLE_1, NAME_TABLE_2, NAME_TABLE_3 = "Order Details", "x\"; DROP TABLE t; --", "Bestillinger \u00e6\u00f8\u00e5"
+NAME_COLS = ["OrderID", "Product ID", "c\"q", "c`b", "c]b", "Pris \u00e6\u00f8\u00e5", "100% (x)"]
+
+
+def ident_dataset():
+    """Three tables with hostile names, as the connector writes them (composite key -> multiset, so pk None and lines sorted)."""
+    cols = {"OrderID": "int", "Product ID": "int", "c\"q": "text", "c`b": "text", "c]b": "text", "Pris \u00e6\u00f8\u00e5": "dec:10,2", "100% (x)": "bool"}
+    rows = [{"OrderID": o, "Product ID": p, "c\"q": "it's \"q\"", "c`b": None, "c]b": "", "Pris \u00e6\u00f8\u00e5": "%d.50" % o, "100% (x)": bool(p % 2)} for o in (1, 2) for p in (1, 2)]
+    neutral = {"canon": "fourdb-canon-2", "source_tz": "Europe/Copenhagen", "tables": {}}
+    lines = {}
+    for t in (NAME_TABLE_1, NAME_TABLE_2, NAME_TABLE_3):
+        neutral["tables"][t] = {"pk": None, "ordering": "multiset", "columns": dict(sorted(cols.items())), "timestamp_columns": {}}
+        lines[t] = sorted(cline(r) for r in rows)
+    return neutral, lines
+
+
+class IdentifierTests(unittest.TestCase):
+    run_req = Canon2Tests.run_req
+    void = Canon2Tests.void
+
+    def test_vectors_accept(self):
+        for v in IDENT_VECTORS["accept"]:
+            if not v.get("skip"):
+                self.assertIsNone(intake_loop.ident_problem(vname(v)), v)
+
+    def test_vectors_reject(self):
+        for v in IDENT_VECTORS["reject"]:
+            self.assertIsNotNone(intake_loop.ident_problem(vname(v)), v)
+
+    def test_same_rule_as_the_connector(self):
+        fourdb = os.path.join(HERE, "..", "..", "arch-idents", "tools", "legacy-intake", "fourdb")
+        if not os.path.isdir(fourdb):
+            self.skipTest("connector worktree not next to this one")
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("connector_idents", os.path.join(fourdb, "connector.py"))
+        connector = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, fourdb)
+        spec.loader.exec_module(connector)
+        sys.path.remove(fourdb)
+        for v in IDENT_VECTORS["accept"] + IDENT_VECTORS["reject"]:
+            if not v.get("skip"):
+                self.assertEqual(intake_loop.ident_problem(vname(v)) is None, connector.ident_problem(vname(v)) is None, v)
+        self.assertEqual((intake_loop.IDENT_MAX_CHARS, intake_loop.IDENT_FORBIDDEN_CATEGORIES), (connector.IDENT_MAX_CHARS, connector.IDENT_FORBIDDEN_CATEGORIES))
+
+    def test_nasty_names_accepted_and_receipt_lists_exact_names(self):
+        neutral, lines = ident_dataset()
+        folder, fp = build_sealed(neutral, lines)
+        r, reply = self.run_req(make_request2(folder))
+        self.assertEqual(r["verdict"], "N/A")
+        self.assertEqual(r["dataset_fingerprint"], fp)
+        self.assertEqual(sorted(r["tables"]), sorted([NAME_TABLE_1, NAME_TABLE_2, NAME_TABLE_3]))     # the exact names, not escaped, not normalized
+        man = json.loads(read(os.path.join(folder, "manifest.json")))["neutral_manifest"]
+        self.assertEqual(r["tables"][NAME_TABLE_1], {"rows": 4, "sha256": man["tables"][NAME_TABLE_1]["sha256"]})
+        self.assertEqual(sorted(man["tables"][NAME_TABLE_1]["columns"]), sorted(NAME_COLS))
+        self.assertEqual(verify_receipt.verify_reply(reply, local_stubs.ROOT_PEM)["dataset_fingerprint"], fp)
+
+    def test_every_rejected_class_is_void_as_table_name_and_as_column_name(self):
+        base, lines = ident_dataset()
+        folder, _ = build_sealed(base, lines)
+        for v in IDENT_VECTORS["reject"]:
+            bad = vname(v)
+
+            def table(man, bad=bad):
+                t = man["neutral_manifest"]["tables"]
+                t[bad] = t.pop(NAME_TABLE_3)
+                man["dataset_fingerprint"] = intake_loop.canon2_dataset_fingerprint(man["neutral_manifest"])
+
+            def column(man, bad=bad):
+                c = man["neutral_manifest"]["tables"][NAME_TABLE_1]["columns"]
+                c[bad] = c.pop("c`b")
+                man["dataset_fingerprint"] = intake_loop.canon2_dataset_fingerprint(man["neutral_manifest"])
+
+            self.void(resign_manifest(make_request2(folder), table), "table name")
+            self.void(resign_manifest(make_request2(folder), column), "column name")
+
+    def test_void_text_shows_the_name_escaped(self):
+        neutral, lines = ident_dataset()
+        folder, _ = build_sealed(neutral, lines)
+        def mutate(man):
+            c = man["neutral_manifest"]["tables"][NAME_TABLE_1]["columns"]
+            c["bad\x00name\n"] = c.pop("c`b")
+            man["dataset_fingerprint"] = intake_loop.canon2_dataset_fingerprint(man["neutral_manifest"])
+        r = self.void(resign_manifest(make_request2(folder), mutate), "refused")
+        self.assertNotIn("\x00", r["tests"][0]["detail"])
+        self.assertNotIn("\n", r["tests"][0]["detail"])
+
+    def test_duplicate_after_nfc_is_void(self):
+        neutral, lines = ident_dataset()
+        folder, _ = build_sealed(neutral, lines)
+        def mutate(man):
+            c = man["neutral_manifest"]["tables"][NAME_TABLE_1]["columns"]
+            c["\u00e9"] = "text"
+            c["e\u0301"] = "text"
+            man["dataset_fingerprint"] = intake_loop.canon2_dataset_fingerprint(man["neutral_manifest"])
+        self.void(resign_manifest(make_request2(folder), mutate), "column name")        # the NFD twin is refused as not-NFC before the duplicate rule is needed
+        self.assertRaises(intake_loop.Void, intake_loop.check_names, "column", ["\u00e9", "e\u0301"])
+
+    def test_omitted_column_names_are_checked_too(self):
+        neutral, rows = optin_neutral()
+        neutral["tables"]["film"]["omitted_columns"][0]["name"] = "blob\tb"
+        folder, _ = build_sealed(neutral, {"film": [cline(r) for r in sorted(rows, key=lambda r: r["film_id"])]})
+        self.void(make_request2(folder), "omitted column name")
+
+    def test_pk_must_name_an_existing_column_with_a_nasty_name(self):
+        neutral, lines = ident_dataset()
+        neutral["tables"][NAME_TABLE_1]["pk"] = "no such column"
+        folder, _ = build_sealed(neutral, lines)
+        self.void(make_request2(folder), "malformed")
+
+    def test_plain_manifests_unchanged(self):
+        folder, fp = build_canon2()
+        r, _ = self.run_req(make_request2(folder))
+        self.assertEqual((r["verdict"], r["dataset_fingerprint"]), ("PASS", fp))
 
 
 class EvidenceTests(unittest.TestCase):

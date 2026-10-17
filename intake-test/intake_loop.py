@@ -61,7 +61,12 @@ ACTION_MIN, ACTION_MAX = 0, 512
 MIN_SUCCESS_RATE = 0.5
 NONCE_RE = re.compile(r"[0-9a-f]{32,128}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
-IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Table and column names of a canon-2 manifest: the same rule as the connector's ident_problem (fourdb CANON.md s11), checked here independently.
+# A name is exact text, 1..128 characters, valid Unicode, already in NFC (never normalized), without control (Cc), format (Cf), surrogate (Cs),
+# private-use (Co) or line/paragraph-separator (Zl, Zp) characters. Spaces, quotes, brackets, backticks, semicolons, "--", "%" and non-ASCII letters are allowed.
+# The room never puts a name into SQL or into a file name; it only compares, hashes and reports it.
+IDENT_MAX_CHARS = 128
+IDENT_FORBIDDEN_CATEGORIES = ("Cc", "Cf", "Cs", "Co", "Zl", "Zp")
 KMS_KEY_RE = re.compile(r"arn:aws:kms:eu-north-1:[0-9]{12}:key/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 # made here at boot, never written anywhere, gone when the enclave stops
@@ -596,6 +601,37 @@ def canon2_policies(neutral: dict) -> dict:
     return checkers
 
 
+def ident_problem(name):
+    """None if `name` is an acceptable table/column name, else a short reason (no code is sent to the buyer, the reason goes into the VOID text)."""
+    if not isinstance(name, str):
+        return "not text"
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError:
+        return "not valid Unicode"
+    if name == "":
+        return "empty"
+    if len(name) > IDENT_MAX_CHARS:
+        return "longer than %d characters" % IDENT_MAX_CHARS
+    for ch in name:
+        if unicodedata.category(ch) in IDENT_FORBIDDEN_CATEGORIES:
+            return "contains U+%04X (%s): control, format, surrogate, private-use or separator character" % (ord(ch), unicodedata.category(ch))
+    if unicodedata.normalize("NFC", name) != name:
+        return "not in NFC form"
+    return None
+
+
+def check_names(kind: str, names, where: str = "") -> None:
+    """Void on the first name that breaks the identifier rule, or when two names are the same after NFC (cannot happen once every name is NFC; kept as the explicit rule)."""
+    names = list(names)
+    for n in names:
+        why = ident_problem(n)
+        if why:
+            raise Void("manifest: %s name %s%s refused: %s" % (kind, ascii(n)[:80], where, why))
+    if len({unicodedata.normalize("NFC", n) for n in names}) != len(names):
+        raise Void("manifest: duplicate %s names after NFC%s" % (kind, where))
+
+
 def canon2_manifest(mf) -> tuple:
     """Checks the shape of the signed canon-2 manifest.json. Returns (neutral manifest, claimed fingerprint)."""
     if not isinstance(mf, dict):
@@ -612,9 +648,14 @@ def canon2_manifest(mf) -> tuple:
     tables = neutral.get("tables")
     if not (isinstance(tables, dict) and tables):
         raise Void("manifest: neutral_manifest.tables missing or empty")
+    check_names("table", tables)
     for name, m in tables.items():
         cols = m.get("columns") if isinstance(m, dict) else None
-        if not (isinstance(m, dict) and IDENT_RE.fullmatch(name) and isinstance(m.get("sha256"), str) and SHA256_RE.fullmatch(m["sha256"])
+        if isinstance(cols, dict):
+            check_names("column", cols, " in table %s" % ascii(name)[:80])
+        if isinstance(m, dict) and isinstance(m.get("omitted_columns"), list):
+            check_names("omitted column", [o.get("name") if isinstance(o, dict) else None for o in m["omitted_columns"]], " in table %s" % ascii(name)[:80])
+        if not (isinstance(m, dict) and isinstance(m.get("sha256"), str) and SHA256_RE.fullmatch(m["sha256"])
                 and isinstance(m.get("rows"), int) and not isinstance(m["rows"], bool) and m["rows"] >= 0
                 and isinstance(cols, dict) and cols and all(isinstance(k, str) and isinstance(v, str) for k, v in cols.items())
                 and (m.get("pk") is None or m["pk"] in cols)):

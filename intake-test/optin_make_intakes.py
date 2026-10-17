@@ -5,12 +5,14 @@
 
 Sakila -> MySQL 5.7 and 8.4 (A: all five type policies incl. geometry; B: --omit-unsupported instead of geometry), Northwind and pubs -> SQL Server 2022
 (--binary-as sha256 and --binary-as hex). Docker containers r6-optin-* on ports 58610..58612, one at a time, always removed. The dumps come from the cache dir
-(never downloaded here). A table the connector refuses under the given flags is left out and listed (e.g. hex on a 20 KB image); the table named
-`Order Details` is left out because the seal gate accepts only plain identifiers. Writes WORKDIR/index.json.
+(never downloaded here). A table the connector refuses under the given flags is left out and listed (e.g. hex on a 20 KB image). Names with spaces such as
+Northwind's `Order Details` are kept (fourdb CANON.md s11: the connector needs FOURDB_DIR to be a checkout that has it); only a name the identifier rule refuses is left out.
+Env: OPTIN_PREFIX (container name prefix, default r6-optin-), OPTIN_PORT_BASE (default 58610; the three targets use base, base+1, base+2; 0 = a random free port each),
+OPTIN_ONLY (comma list of targets my57,my84,ms22; default all). Writes WORKDIR/index.json.
 """
 import json
 import os
-import re
+import socket
 import subprocess
 import sys
 
@@ -25,10 +27,24 @@ import connector  # noqa: E402
 import fetch_dumps  # noqa: E402
 import run_public as rp  # noqa: E402  (its loaders: start, load, admin, catalog, inventory)
 
-TARGETS = {  # name: (engine, port, image, container, dump key, database) - run_public's shape, but our own names and ports
-    "my57": ("mysql", 58610, "mysql:5.7", "r6-optin-my57", "sakila", "sakila"),
-    "my84": ("mysql", 58611, "mysql:8.4", "r6-optin-my84", "sakila", "sakila"),
-    "ms22": ("mssql", 58612, "mcr.microsoft.com/mssql/server:2022-latest", "r6-optin-ms22", "northwind+pubs", None),
+PREFIX = os.environ.get("OPTIN_PREFIX", "r6-optin-")
+PORT_BASE = int(os.environ.get("OPTIN_PORT_BASE", "58610"))
+
+
+def _port(i):
+    if PORT_BASE:
+        return PORT_BASE + i
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+TARGETS = {  # name: (engine, port, image, container, dump key, database) - run_public's shape, but our own names and ports (published on 127.0.0.1 by run_public.start)
+    "my57": ("mysql", _port(0), "mysql:5.7", PREFIX + "my57", "sakila", "sakila"),
+    "my84": ("mysql", _port(1), "mysql:8.4", PREFIX + "my84", "sakila", "sakila"),
+    "ms22": ("mssql", _port(2), "mcr.microsoft.com/mssql/server:2022-latest", PREFIX + "ms22", "northwind+pubs", None),
 }
 rp.TARGETS.clear()
 rp.TARGETS.update(TARGETS)
@@ -40,7 +56,6 @@ RUNS = {  # target -> [(label, database, flags)]
     "ms22": [("northwind-sha256", "northwind", ["--binary-as", "sha256"]), ("northwind-hex", "northwind", ["--binary-as", "hex"]),
              ("pubs-sha256", "pubs", ["--binary-as", "sha256"]), ("pubs-hex", "pubs", ["--binary-as", "hex"])],
 }
-IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def flags_to_optin(flags):
@@ -54,7 +69,7 @@ def flags_to_optin(flags):
 
 
 def cleanup():
-    names = [n for n in rp.sh("docker", "ps", "-a", "--format", "{{.Names}}").stdout.split() if n.startswith("r6-optin-")]
+    names = [n for n in rp.sh("docker", "ps", "-a", "--format", "{{.Names}}").stdout.split() if n.startswith(PREFIX)]
     if names:
         rp.sh("docker", "rm", "-f", *names)  # only our own containers
 
@@ -64,8 +79,9 @@ def table_plan(t, db, flags):
     engine = TARGETS[t][0]
     tables, out = {}, {}
     for name, pkcols in rp.catalog(t, db)["tables"].items():
-        if not IDENT.fullmatch(name):
-            out[name] = "table name is not a plain identifier (the seal gate and the room accept only [A-Za-z_][A-Za-z0-9_]*)"
+        problem = connector.ident_problem(name)
+        if problem:
+            out[name] = "%s (%s)" % problem
             continue
         cols, _ = rp.inventory(t, db, name)
         lt = {n: l for n, l, _ in cols}
@@ -96,6 +112,8 @@ def main():
     cleanup()
     try:
         for t, runs in RUNS.items():
+            if os.environ.get("OPTIN_ONLY") and t not in os.environ["OPTIN_ONLY"].split(","):
+                continue
             engine = TARGETS[t][0]
             rp.start(t)
             rp.load(t, dumps)
@@ -106,9 +124,9 @@ def main():
                 tables, left_out = table_plan(t, db, flags)
                 out = os.path.join(work, f"{t}-{label}")
                 kek = os.path.join(work, f"{t}-{label}.kek")
-                spec = ",".join(f"{n}:{pk or ''}" for n, pk in tables.items())
+                spec = json.dumps([{"name": n, "pk": pk} for n, pk in tables.items()])
                 p = subprocess.run([sys.executable, os.path.join(FOURDB, "connector.py"), "--engine", engine, "--dsn", rp.dsn(t, db), "--out", out, "--mode", "sealed",
-                                    "--kek-file", kek, "--tables", spec, "--legacy", *flags], capture_output=True, text=True)
+                                    "--kek-file", kek, "--tables-json", spec, "--legacy", *flags], capture_output=True, text=True)
                 if p.returncode:
                     raise SystemExit(f"{t} {label}: connector failed: {p.stderr[-400:]}")
                 info = json.loads(p.stdout)
