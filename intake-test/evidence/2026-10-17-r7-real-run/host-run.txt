@@ -1,0 +1,19 @@
+1b9dc02 Merge remote-tracking branch 'origin/room-intake-canon2' into room-intake-optin
+docker 25.0.16 Nitro CLI 1.5.0
+kmstool_enclave_cli: OK
+libnsm.so: OK
+PCR0 2b24ad8b14c2866b6efa0702dc57751c94248364fcf94ede408b2e7a2748dcf0f4aa3d6279209fa32261895eae7876e0
+PCR1 4b4d5b3661b3efc12920900c80e126e4ce783c522de6c02a2a5bf7af3a2b9327b86776f188e4be1c1c404a129dbda493
+PCR2 f2b70f8e2015b89103e38b6e03db2ba50280c8d292c2e3f82364367027b57b387b2250959b56dfab7d4c51c4fbc20d1e
+BEFORE_PCR0 ['3ea0a6f506beac36cb81e6a469df53072f0c38d3599183b15960246c2f89108cf276430233f7f16ac00de1162f5ac343']
+b5811adc9d691ba193ac02a3522e9803c1fe409676bf97c4d387734e89bdea32  payload-good.json
+f2cb496dc667b794478f9f88758d412612937750d610f772f7f77e3c6a43401d  payload-tampered.json
+CID_prod 17
+CID_debug 18
+VERDICT_good PASS [('T1', 'PASS'), ('T2', 'PASS'), ('T3', 'PASS'), ('T4', 'PASS')]
+VERDICT_tampered VOID [('V0', 'VOID')]
+VERDICT_debug VOID [('V0', 'VOID')]
+RUN_DONE
+RESTORED_PCR0 3ea0a6f506beac36cb81e6a469df53072f0c38d3599183b15960246c2f89108cf276430233f7f16ac00de1162f5ac343
+HEALTH {"ok":true,"decrypts":false,"holds_unwrap_key":false,"post":"/v1/receipt"}
+

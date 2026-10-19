@@ -131,17 +131,35 @@ def check_receipt_v2(receipt: dict) -> None:
         raise ValueError("receipt/2: canon is not fourdb-canon-2")
     if not hex64.fullmatch(str(receipt.get("manifest_sha256", ""))):
         raise ValueError("receipt/2: manifest_sha256 missing")
-    for t in receipt["tests"]:
+    tests = receipt["tests"]
+    for t in tests:
         if t.get("verdict") != t.get("result"):
             raise ValueError("receipt/2: a test's verdict and result differ")
-    if receipt["verdict"] == "VOID":
-        if receipt.get("dataset_fingerprint") != "" or receipt["tests"][0].get("verdict") != "VOID":
+    for k in ("opt_in", "legacy_policy", "omitted_columns"):
+        if not isinstance(receipt.get(k), dict):
+            raise ValueError(f"receipt/2: {k} missing (it must be an object, empty when there is none)")
+    verdict, results = receipt["verdict"], [t.get("verdict") for t in tests]
+    if verdict == "VOID":
+        v0 = next((t for t in tests if t.get("id") == "V0"), None)  # by id: not necessarily the first entry
+        if receipt.get("dataset_fingerprint") != "" or v0 is None or v0.get("verdict") != "VOID":
             raise ValueError("receipt/2: a VOID receipt must have no dataset_fingerprint and a V0 VOID test")
-    else:
-        if not hex64.fullmatch(str(receipt.get("dataset_fingerprint", ""))):
-            raise ValueError("receipt/2: PASS/FAIL receipt without a dataset_fingerprint")
-        if not all(hex64.fullmatch(str(v.get("sha256", ""))) for v in receipt["tables"].values()) or not receipt["tables"]:
-            raise ValueError("receipt/2: per-table canon-2 digests missing")
+        if receipt["opt_in"] or receipt["legacy_policy"] or receipt["omitted_columns"]:
+            raise ValueError("receipt/2: a VOID receipt must not surface policies (the manifest was not validated)")
+        return
+    if verdict not in ("PASS", "FAIL", "N/A"):
+        raise ValueError(f"receipt/2: unknown verdict {verdict!r}")
+    if not tests or "VOID" in results:
+        raise ValueError("receipt/2: a measured receipt needs tests and no VOID test")
+    if verdict == "PASS" and not all(r == "PASS" for r in results):
+        raise ValueError("receipt/2: PASS but a test did not pass")
+    if verdict == "N/A" and not all(r == "N/A" for r in results):
+        raise ValueError("receipt/2: N/A verdict but a test ran")
+    if verdict == "FAIL" and not ("FAIL" in results and "N/A" not in results):
+        raise ValueError("receipt/2: FAIL without a failed test")
+    if not hex64.fullmatch(str(receipt.get("dataset_fingerprint", ""))):
+        raise ValueError("receipt/2: PASS/FAIL/N/A receipt without a dataset_fingerprint")
+    if not all(hex64.fullmatch(str(v.get("sha256", ""))) for v in receipt["tables"].values()) or not receipt["tables"]:
+        raise ValueError("receipt/2: per-table canon-2 digests missing")
 
 
 def verify_reply(reply: dict, root_pem: bytes = None) -> dict:
@@ -157,18 +175,21 @@ def verify_reply(reply: dict, root_pem: bytes = None) -> dict:
     if claims["nonce"] != bytes.fromhex(receipt["nonce"]):
         raise ValueError("attestation nonce is not the receipt's nonce")
     Ed25519PublicKey.from_public_bytes(claims["public_key"]).verify(sig, raw)  # raises InvalidSignature
+    chain_validated = False
     if root_pem:
-        verify_chain(claims, root_pem)
+        verify_chain(claims, root_pem)  # raises on any problem
+        chain_validated = True
     fmt = receipt.get("format")
     if fmt == "aarloven-intake-test-receipt/2":
         check_receipt_v2(receipt)
     elif fmt != "aarloven-intake-test-receipt/1":
         raise ValueError(f"unknown receipt format {fmt!r}")
     module_id = claims.get("module_id", "")
-    res = {"pcr0": claims["pcrs"][0].hex(), "verdict": receipt["verdict"], "chain_validated": bool(root_pem),
+    res = {"pcr0": claims["pcrs"][0].hex(), "verdict": receipt["verdict"], "chain_validated": chain_validated,
            "format": fmt, "module_id": module_id, "stub": str(module_id).startswith("STUB")}
     if fmt.endswith("/2"):
-        res.update(canon=receipt["canon"], dataset_fingerprint=receipt["dataset_fingerprint"])
+        res.update(canon=receipt["canon"], dataset_fingerprint=receipt["dataset_fingerprint"], opt_in=receipt["opt_in"],
+                   legacy_policy=receipt["legacy_policy"], omitted_columns=receipt["omitted_columns"])
     return res
 
 
@@ -198,7 +219,11 @@ def main() -> int:
     if "canon" in res:
         print("canon:", res["canon"])
         print("dataset_fingerprint:", res["dataset_fingerprint"] or "(none: VOID)")
-    print("verdict:", res["verdict"])
+        for k, what in (("opt_in", "opt-in policies"), ("legacy_policy", "legacy policy"), ("omitted_columns", "omitted columns (NOT covered by the fingerprint's rows)")):
+            print(f"{what}:", json.dumps(res[k], sort_keys=True) if res[k] else "none")
+        if res["opt_in"].get("timestamp_tz"):
+            print("note: timestamp_tz.declared_zone is the SELLER'S statement; nothing verified it")
+    print("verdict:", res["verdict"] + (" (no test applies to this dataset; this is not a pass)" if res["verdict"] == "N/A" else ""))
     print("PCR0:", res["pcr0"])
     if a.expect_fingerprint and a.expect_fingerprint.lower() != res.get("dataset_fingerprint"):
         print("dataset_fingerprint differs from --expect-fingerprint (or the receipt has none)")

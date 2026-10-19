@@ -1,0 +1,37 @@
+== good (expect PASS T1-T4, PCR0 2b24ad8b14c2866b6efa0702dc57751c94248364fcf94ede408b2e7a2748dcf0f4aa3d6279209fa32261895eae7876e0, fingerprint 921056c113dd0c79f3aa877b4e40b8bfdb4c0735519387c907ed0c53328f25c1, chain to AWS Nitro root)
+signature, attestation user_data, nonce and public key: OK
+certificate chain: OK
+receipt format: aarloven-intake-test-receipt/2
+canon: fourdb-canon-2
+dataset_fingerprint: 921056c113dd0c79f3aa877b4e40b8bfdb4c0735519387c907ed0c53328f25c1
+opt-in policies: none
+legacy policy: none
+omitted columns (NOT covered by the fingerprint's rows): none
+verdict: PASS
+PCR0: 2b24ad8b14c2866b6efa0702dc57751c94248364fcf94ede408b2e7a2748dcf0f4aa3d6279209fa32261895eae7876e0
+verdict: PASS [('T1', 'PASS'), ('T2', 'PASS'), ('T3', 'PASS'), ('T4', 'PASS')]
+== tampered (expect VOID, same PCR0)
+signature, attestation user_data, nonce and public key: OK
+certificate chain: OK
+receipt format: aarloven-intake-test-receipt/2
+canon: fourdb-canon-2
+dataset_fingerprint: (none: VOID)
+opt-in policies: none
+legacy policy: none
+omitted columns (NOT covered by the fingerprint's rows): none
+verdict: VOID
+PCR0: 2b24ad8b14c2866b6efa0702dc57751c94248364fcf94ede408b2e7a2748dcf0f4aa3d6279209fa32261895eae7876e0
+verdict: VOID [('V0', 'VOID')]
+== debug-mode (expect PCR0 all zeros, so KMS refuses the key -> not PASS)
+signature, attestation user_data, nonce and public key: OK
+certificate chain: OK
+receipt format: aarloven-intake-test-receipt/2
+canon: fourdb-canon-2
+dataset_fingerprint: (none: VOID)
+opt-in policies: none
+legacy policy: none
+omitted columns (NOT covered by the fingerprint's rows): none
+verdict: VOID
+PCR0: 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+verdict: VOID [('V0', 'VOID')]
+ALL_EXPECTED
