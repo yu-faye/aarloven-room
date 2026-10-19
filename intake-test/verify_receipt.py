@@ -16,6 +16,7 @@ import argparse
 import base64
 import hashlib
 import json
+import re
 import struct
 import sys
 
@@ -122,8 +123,30 @@ def verify_chain(claims: dict, root_pem: bytes) -> None:
                 raise ValueError("a certificate was not valid when the document was made")
 
 
+def check_receipt_v2(receipt: dict) -> None:
+    """Format-2 receipts (canon-2): the added fields must be there and consistent; ValueError otherwise.
+    This checks the receipt's own consistency; it cannot say the fingerprint is the one the buyer meant (see --expect-fingerprint)."""
+    hex64 = re.compile(r"[0-9a-f]{64}")
+    if receipt.get("canon") != "fourdb-canon-2":
+        raise ValueError("receipt/2: canon is not fourdb-canon-2")
+    if not hex64.fullmatch(str(receipt.get("manifest_sha256", ""))):
+        raise ValueError("receipt/2: manifest_sha256 missing")
+    for t in receipt["tests"]:
+        if t.get("verdict") != t.get("result"):
+            raise ValueError("receipt/2: a test's verdict and result differ")
+    if receipt["verdict"] == "VOID":
+        if receipt.get("dataset_fingerprint") != "" or receipt["tests"][0].get("verdict") != "VOID":
+            raise ValueError("receipt/2: a VOID receipt must have no dataset_fingerprint and a V0 VOID test")
+    else:
+        if not hex64.fullmatch(str(receipt.get("dataset_fingerprint", ""))):
+            raise ValueError("receipt/2: PASS/FAIL receipt without a dataset_fingerprint")
+        if not all(hex64.fullmatch(str(v.get("sha256", ""))) for v in receipt["tables"].values()) or not receipt["tables"]:
+            raise ValueError("receipt/2: per-table canon-2 digests missing")
+
+
 def verify_reply(reply: dict, root_pem: bytes = None) -> dict:
-    """Returns {"pcr0", "verdict", "chain_validated"}; raises ValueError (or a cryptography error) on any mismatch."""
+    """Returns {"pcr0", "verdict", "chain_validated", "format", "module_id", "stub", plus "canon" and "dataset_fingerprint" for
+    format 2}; raises ValueError (or a cryptography error) on any mismatch."""
     receipt, sig = reply["receipt"], bytes.fromhex(reply["sig"])
     raw = canon(receipt).encode()
     if not reply.get("attestation_b64"):
@@ -136,7 +159,17 @@ def verify_reply(reply: dict, root_pem: bytes = None) -> dict:
     Ed25519PublicKey.from_public_bytes(claims["public_key"]).verify(sig, raw)  # raises InvalidSignature
     if root_pem:
         verify_chain(claims, root_pem)
-    return {"pcr0": claims["pcrs"][0].hex(), "verdict": receipt["verdict"], "chain_validated": bool(root_pem)}
+    fmt = receipt.get("format")
+    if fmt == "aarloven-intake-test-receipt/2":
+        check_receipt_v2(receipt)
+    elif fmt != "aarloven-intake-test-receipt/1":
+        raise ValueError(f"unknown receipt format {fmt!r}")
+    module_id = claims.get("module_id", "")
+    res = {"pcr0": claims["pcrs"][0].hex(), "verdict": receipt["verdict"], "chain_validated": bool(root_pem),
+           "format": fmt, "module_id": module_id, "stub": str(module_id).startswith("STUB")}
+    if fmt.endswith("/2"):
+        res.update(canon=receipt["canon"], dataset_fingerprint=receipt["dataset_fingerprint"])
+    return res
 
 
 def main() -> int:
@@ -144,6 +177,7 @@ def main() -> int:
     ap.add_argument("reply")
     ap.add_argument("--root", help="the AWS Nitro root certificate (PEM), to validate the chain")
     ap.add_argument("--expect-pcr0", help="fail unless PCR0 is this")
+    ap.add_argument("--expect-fingerprint", help="format 2: fail unless dataset_fingerprint is this (the one agreed out of band)")
     a = ap.parse_args()
     with open(a.reply, encoding="utf-8") as f:
         reply = json.load(f)
@@ -158,8 +192,17 @@ def main() -> int:
         return 1
     print("signature, attestation user_data, nonce and public key: OK")
     print("certificate chain:", "OK" if res["chain_validated"] else "NOT VALIDATED (no --root; the document is not proven to come from AWS)")
+    if res["stub"]:
+        print("WARNING: STUB attestation (module_id %s): produced by a local test stub, NOT by a Nitro Enclave; the PCR0 below means nothing" % res["module_id"])
+    print("receipt format:", res["format"])
+    if "canon" in res:
+        print("canon:", res["canon"])
+        print("dataset_fingerprint:", res["dataset_fingerprint"] or "(none: VOID)")
     print("verdict:", res["verdict"])
     print("PCR0:", res["pcr0"])
+    if a.expect_fingerprint and a.expect_fingerprint.lower() != res.get("dataset_fingerprint"):
+        print("dataset_fingerprint differs from --expect-fingerprint (or the receipt has none)")
+        return 1
     if a.expect_pcr0 and a.expect_pcr0.lower() != res["pcr0"]:
         print("PCR0 differs from --expect-pcr0")
         return 1

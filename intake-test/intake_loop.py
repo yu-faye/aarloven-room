@@ -10,10 +10,19 @@ ciphertext per table, each table key wrapped by KMS (RSAES_OAEP_SHA_256) to the 
 4. Runs T1..T4 on `frames` and `episodes`. The verdict is PASS only when all four pass, else FAIL.
 5. Signs a receipt with an Ed25519 key made in memory at start, and asks the NSM for an attestation document over
    the receipt's SHA-256, the nonce and that public key. The image's PCR0 is read from that document.
+
+Two request formats. Without a `format` field: the prototype format 1 above (receipt `aarloven-intake-test-receipt/1`).
+With `"format": "fourdb-canon-2"` (canon-2 draft, 2026-10-17): the buyer's sealed intake as the fourdb connector writes it
+(`--mode sealed`): `manifest` is the exact bytes of its manifest.json (neutral manifest + dataset fingerprint + sealed block),
+the buyer signs those bytes, `tables[name].sealed_b64` is nonce||ciphertext||tag of the canonical JSONL (AES-256-GCM, AAD
+`fourdb-seal-1|canon|dataset_fingerprint|table`) and `wrapped_dek_b64` is the one data key wrapped by KMS (RSAES_OAEP_SHA_256).
+The room re-derives each table digest and the dataset fingerprint from the decrypted rows (a self-contained port of the
+canon-2 hashing rules, see CANON.md in the li4db repo) and answers with receipt `aarloven-intake-test-receipt/2`.
 """
 from __future__ import annotations
 
 import base64
+import copy
 import ctypes
 import hashlib
 import hmac
@@ -38,12 +47,18 @@ NSM_LIB = os.environ.get("NSM_LIB", "/usr/lib64/libnsm.so")
 MAX_REQUEST = int(os.environ.get("INTAKE_MAX_REQUEST", str(128 * 1024 * 1024)))
 
 RECEIPT_FORMAT = "aarloven-intake-test-receipt/1"
+RECEIPT_FORMAT_V2 = "aarloven-intake-test-receipt/2"
+REQUEST_FORMAT_CANON2 = "fourdb-canon-2"
+CANON2_ID = "fourdb-canon-2"
+SEAL_AAD = "fourdb-seal-1"  # fourdb seal.py: AAD = SEAL_AAD|canon|dataset_fingerprint|table
 FRAMES_COLUMNS = ["idx", "episode_index", "frame_index", "ts", "state_x", "state_y",
                   "action_x", "action_y", "reward", "done", "success", "task_index"]
 ACTION_MIN, ACTION_MAX = 0, 512
 MIN_SUCCESS_RATE = 0.5
 NONCE_RE = re.compile(r"[0-9a-f]{32,128}")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+CANON_FLOAT_RE = re.compile(r"0|nan|inf|-inf|-?[0-9](\.[0-9]+)?e[+-][0-9]{2,}")
 KMS_KEY_RE = re.compile(r"arn:aws:kms:eu-north-1:[0-9]{12}:key/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 # made here at boot, never written anywhere, gone when the enclave stops
@@ -150,7 +165,9 @@ def t1_schema(manifest: dict, rows: dict) -> tuple:
         for i, row in enumerate(rows[name]):
             if set(row) != set(cols):
                 return False, f"{name}: row {i} columns differ from the manifest"
-    if manifest["tables"]["frames"]["columns"] != FRAMES_COLUMNS:
+    got = manifest["tables"]["frames"]["columns"]
+    # format 1 lists the columns in table order; canon-2 lists them sorted (its column order is not significant)
+    if (got != FRAMES_COLUMNS) if manifest.get("columns_ordered", True) else (sorted(got) != sorted(FRAMES_COLUMNS)):
         return False, "frames: manifest columns are not the expected ones"
     return True, f"columns match the manifest in {len(rows)} tables"
 
@@ -163,11 +180,19 @@ def t2_frame_count(manifest: dict, rows: dict) -> tuple:
     return total == frames, f"frames={frames} sum(episodes.length)={total}"
 
 
+def _canon_number(v, logical):
+    """canon-2 writes f32/f64 as JSON strings (shortest round-trip decimal, e.g. "1.28e+02"); format 1 rows hold plain numbers."""
+    if logical in ("f32", "f64") and isinstance(v, str) and CANON_FLOAT_RE.fullmatch(v):
+        return float(v)
+    return v
+
+
 def t3_action_bounds(manifest: dict, rows: dict) -> tuple:
     bad, first = 0, None
+    types = manifest["tables"]["frames"].get("types", {})
     for i, r in enumerate(rows["frames"]):
         for c in ("action_x", "action_y"):
-            v = r.get(c)
+            v = _canon_number(r.get(c), types.get(c))
             if not (_num(v) and ACTION_MIN <= v <= ACTION_MAX):
                 bad += 1
                 first = i if first is None else first
@@ -296,6 +321,10 @@ def finish(manifest_str, fp: str, info: dict, tests: list, verdict: str, nonce: 
         "code_sha256": _code_sha256(),
         "measured_by": "enclave",
     }
+    return _sign_and_attest(receipt, nonce)
+
+
+def _sign_and_attest(receipt: dict, nonce: str) -> dict:
     raw = canon(receipt).encode()
     out = {"receipt": receipt, "sig": _SIGNER.sign(raw).hex()}
     try:
@@ -306,9 +335,172 @@ def finish(manifest_str, fp: str, info: dict, tests: list, verdict: str, nonce: 
     return out
 
 
+# ---------- canon-2 (fourdb-canon-2): a self-contained port of what the room needs from the connector ----------
+def canon2_line(row: dict) -> str:
+    """connector.canon_line: one canonical row, keys sorted, no spaces, ASCII only."""
+    return json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def canon2_dataset_fingerprint(neutral: dict) -> str:
+    """connector.dataset_fingerprint: SHA-256 of the neutral manifest (sorted keys, (',', ':') separators)."""
+    return hashlib.sha256(json.dumps(neutral, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def canon2_aad(canon_id: str, fingerprint: str, table: str) -> bytes:
+    """fourdb seal.aad: binds the canon id, the dataset fingerprint and the table name to the ciphertext."""
+    return f"{SEAL_AAD}|{canon_id}|{fingerprint}|{table}".encode()
+
+
+def canon2_manifest(mf) -> tuple:
+    """Checks the shape of the signed canon-2 manifest.json. Returns (neutral manifest, claimed fingerprint)."""
+    if not isinstance(mf, dict):
+        raise Void("manifest: not an object")
+    if mf.get("mode") != "sealed":
+        raise Void("manifest: not a sealed intake (mode=%r); a hash-only intake gets no tests" % (mf.get("mode"),))
+    neutral, claimed, sealed = mf.get("neutral_manifest"), mf.get("dataset_fingerprint"), mf.get("sealed")
+    if not isinstance(neutral, dict) or neutral.get("canon") != CANON2_ID:
+        raise Void("manifest: neutral_manifest.canon is not %s" % CANON2_ID)
+    if not (isinstance(claimed, str) and SHA256_RE.fullmatch(claimed)):
+        raise Void("manifest: dataset_fingerprint missing or malformed")
+    if canon2_dataset_fingerprint(neutral) != claimed:
+        raise Void("manifest: dataset_fingerprint is not the SHA-256 of its neutral manifest")
+    tables = neutral.get("tables")
+    if not (isinstance(tables, dict) and {"frames", "episodes"} <= set(tables)):
+        raise Void("manifest: neutral_manifest.tables must include frames and episodes")
+    for name, m in tables.items():
+        cols = m.get("columns") if isinstance(m, dict) else None
+        if not (isinstance(m, dict) and IDENT_RE.fullmatch(name) and isinstance(m.get("sha256"), str) and SHA256_RE.fullmatch(m["sha256"])
+                and isinstance(m.get("rows"), int) and not isinstance(m["rows"], bool) and m["rows"] >= 0
+                and isinstance(cols, dict) and cols and all(isinstance(k, str) and isinstance(v, str) for k, v in cols.items())
+                and (m.get("pk") is None or m["pk"] in cols)):
+            raise Void(f"manifest: table {name} entry malformed")
+    stables = sealed.get("tables") if isinstance(sealed, dict) else None
+    if not (isinstance(stables, dict) and set(stables) == set(tables)
+            and all(isinstance(v, dict) and isinstance(v.get("sealed_sha256"), str) and SHA256_RE.fullmatch(v["sealed_sha256"]) for v in stables.values())):
+        raise Void("manifest: sealed block missing or does not match the neutral manifest tables")
+    return neutral, claimed
+
+
+def canon2_rows(name: str, plain: bytes, pk) -> tuple:
+    """Parses one table's decrypted canonical JSONL, re-derives its digest as connector.table_digest does.
+    Returns (rows, sha256, row count). Every line must already be in canonical form, and in the canonical order."""
+    try:
+        text = plain.decode("utf-8")
+    except UnicodeDecodeError:
+        raise Void(f"table {name}: not UTF-8")
+    if text and not text.endswith("\n"):
+        raise Void(f"table {name}: last line is not newline-terminated")
+    lines = text.split("\n")[:-1] if text else []
+    h, rows, prev = hashlib.sha256(), [], None
+    for n, line in enumerate(lines, 1):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            raise Void(f"table {name}: line {n} is not JSON")
+        if not isinstance(row, dict) or canon2_line(row) != line:
+            raise Void(f"table {name}: line {n} is not a canon-2 canonical row")
+        if pk is not None:
+            v = row.get(pk)
+            if type(v) is not int or (prev is not None and v <= prev):
+                raise Void(f"table {name}: rows are not strictly ascending by integer primary key {pk}")
+            prev = v
+        h.update(line.encode() + b"\n")
+        rows.append(row)
+    if pk is None and lines != sorted(lines):
+        raise Void(f"table {name}: rows without a primary key must be sorted as lines (multiset order)")
+    return rows, h.hexdigest(), len(rows)
+
+
+def open_tables_canon2(req: dict, neutral: dict, claimed_fp: str, mf: dict, info: dict, kms_key: str) -> tuple:
+    """Unwraps the data key, decrypts every table and re-derives digests and the dataset fingerprint.
+    Returns ({name: rows}, fingerprint re-derived from the rows). Any mismatch with the signed manifest raises Void."""
+    if not kms_key:
+        raise Void("kms_key: a key ARN arn:aws:kms:eu-north-1:<12 digits>:key/<uuid> expected")
+    creds, sent, wrapped = req.get("creds"), req.get("tables"), req.get("wrapped_dek_b64")
+    if not (isinstance(creds, dict) and all(isinstance(creds.get(k), str) for k in ("AccessKeyId", "SecretAccessKey", "Token"))):
+        raise Void("creds: AccessKeyId, SecretAccessKey and Token expected")
+    mtables, stables = neutral["tables"], mf["sealed"]["tables"]
+    if not (isinstance(sent, dict) and set(sent) == set(mtables) and isinstance(wrapped, str)):
+        raise Void("tables: the request must carry wrapped_dek_b64 and the same tables as the manifest")
+    try:
+        dek = kms_decrypt_room_key(creds, wrapped, kms_key, "RSAES_OAEP_SHA_256")
+    except Exception as e:
+        raise Void(f"wrapped_dek: {e}"[:500])
+    if len(dek) != 32:
+        raise Void(f"wrapped_dek: unwrapped key is {len(dek)} bytes, expected 32")
+    derived, rows = copy.deepcopy(neutral), {}
+    for name in sorted(mtables):
+        try:
+            blob = base64.b64decode(sent[name]["sealed_b64"], validate=True)
+        except Exception:
+            raise Void(f"table {name}: sealed_b64 missing or not base64")
+        if sha256_hex(blob) != stables[name]["sealed_sha256"]:
+            raise Void(f"table {name}: sealed SHA-256 differs from the manifest (ciphertext changed or swapped)")
+        try:
+            plain = AESGCM(dek).decrypt(blob[:12], blob[12:], canon2_aad(neutral["canon"], claimed_fp, name))
+        except Exception as e:
+            raise Void(f"table {name}: does not decrypt ({type(e).__name__}); changed ciphertext or a different table, fingerprint or canon id in the AAD")
+        rows[name], digest, count = canon2_rows(name, plain, mtables[name].get("pk"))
+        info[name] = {"rows": count, "sha256": digest}
+        if digest != mtables[name]["sha256"]:
+            raise Void(f"table {name}: canon-2 digest differs from the manifest")
+        if count != mtables[name]["rows"]:
+            raise Void(f"table {name}: {count} rows, manifest says {mtables[name]['rows']}")
+        derived["tables"][name]["sha256"], derived["tables"][name]["rows"] = digest, count
+    # columns, pk and logical types come from the buyer-signed manifest; digests and counts from the decrypted rows
+    fingerprint = canon2_dataset_fingerprint(derived)
+    if fingerprint != claimed_fp:
+        raise Void("dataset fingerprint re-derived from the rows differs from the manifest")
+    return rows, fingerprint
+
+
+def finish_v2(manifest_str, buyer_fp: str, fingerprint: str, info: dict, tests: list, verdict: str, nonce: str, kms_key: str = "") -> dict:
+    receipt = {
+        "format": RECEIPT_FORMAT_V2,
+        "mode": "test",
+        "canon": CANON2_ID,
+        "dataset_fingerprint": fingerprint,  # re-derived from the decrypted rows; "" when the input was VOID before that
+        "manifest_sha256": sha256_hex(manifest_str.encode()) if isinstance(manifest_str, str) else "",
+        "buyer_pubkey_fp": buyer_fp,
+        "tables": info if verdict != "VOID" else {},  # no per-table digests on a VOID intake (gpt-5 review, round 5)
+        # `verdict` is the v2 name; `result` is kept with the same value so v1 readers still work
+        "tests": [dict(t, verdict=t["result"]) for t in tests],
+        "verdict": verdict,
+        "kms_key": kms_key,
+        "nonce": nonce,
+        "code_sha256": _code_sha256(),
+        "measured_by": "enclave",
+    }
+    return _sign_and_attest(receipt, nonce)
+
+
+def process_request_canon2(req: dict) -> dict:
+    nonce, manifest_str = req.get("nonce"), req.get("manifest")
+    buyer_fp, fingerprint, info, kms_key = "", "", {}, request_kms_key(req)
+    if not (isinstance(nonce, str) and NONCE_RE.fullmatch(nonce)):
+        return finish_v2(manifest_str, buyer_fp, fingerprint, info, [_void("nonce: 32 to 128 lowercase hex characters expected")], "VOID", "", kms_key)
+    try:
+        buyer_fp = check_buyer(req)
+        try:
+            mf = json.loads(manifest_str)
+        except ValueError:
+            raise Void("manifest: not JSON")
+        neutral, claimed = canon2_manifest(mf)
+        rows, fingerprint = open_tables_canon2(req, neutral, claimed, mf, info, kms_key)
+        view = {"columns_ordered": False,
+                "tables": {n: {"columns": sorted(m["columns"]), "types": m["columns"]} for n, m in neutral["tables"].items()}}
+        tests = run_tests(view, rows)
+    except Void as v:
+        return finish_v2(manifest_str, buyer_fp, "", info, [_void(str(v))], "VOID", nonce, kms_key)
+    verdict = "PASS" if all(t["result"] == "PASS" for t in tests) else "FAIL"
+    return finish_v2(manifest_str, buyer_fp, fingerprint, info, tests, verdict, nonce, kms_key)
+
+
 def process_request(req: dict) -> dict:
     if not isinstance(req, dict):
         req = {}
+    if req.get("format") == REQUEST_FORMAT_CANON2:
+        return process_request_canon2(req)
     nonce, manifest_str = req.get("nonce"), req.get("manifest")
     fp, info, kms_key = "", {}, request_kms_key(req)
     if not (isinstance(nonce, str) and NONCE_RE.fullmatch(nonce)):
