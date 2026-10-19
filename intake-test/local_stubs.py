@@ -34,6 +34,8 @@ opt = {{a[i]: a[i + 1] for i in range(1, len(a) - 1) if a[i].startswith("--")}}
 if a[0] != "decrypt" or opt.get("--encryption-algorithm") != "RSAES_OAEP_SHA_256":
     sys.exit("fake kmstool: bad invocation")
 if opt.get("--key-id") != os.environ["FAKE_KMS_KEY"]:
+    for i in range(6):  # like the real kmstool: INFO noise first, the error last (keeps the "tail" fix honest)
+        print(f"[INFO] [2026-10-17T17:52:22Z] [00007f44f8139c80] [event-loop] - id=0x2d34d20: fake log line {{i}} padding padding padding", file=sys.stderr)
     print("AccessDeniedException: key policy does not allow this enclave", file=sys.stderr); sys.exit(1)
 priv = serialization.load_pem_private_key(open(os.environ["FAKE_KMS_PRIV"], "rb").read(), None)
 try:
