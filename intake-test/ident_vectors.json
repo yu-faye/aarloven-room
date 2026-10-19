@@ -1,0 +1,20 @@
+{
+ "_comment": "Shared test vectors for the identifier rule (CANON.md s11). The connector (test_idents.py) and the room (intake-test/test_local.py) both check these; keep the two copies byte-identical. 'repeat' builds a name of N copies of a character.",
+ "accept": [
+  {"name": "frames"}, {"name": "Order Details"}, {"name": "a"}, {"name": "x y  z"}, {"name": " leading and trailing "},
+  {"name": "quote'single"}, {"name": "quote\"double"}, {"name": "back`tick"}, {"name": "close]bracket"}, {"name": "semi;colon"}, {"name": "dash--comment"},
+  {"name": "100% (done) [x]"}, {"name": "a:b,c"}, {"name": "slash/back\\dot.."}, {"name": "..", "note": "legal as a name; never used as a file name"},
+  {"name": "Bestillinger æøå"}, {"name": "日本語の表"}, {"name": "emoji 😀"}, {"name": "x\"; DROP TABLE t; --"},
+  {"name": "é", "note": "decomposed e + combining acute IS rejected, see reject; this entry is replaced below", "skip": true},
+  {"repeat": ["a", 128]}
+ ],
+ "reject": [
+  {"name": "", "code": "IDENT_EMPTY"},
+  {"name": "nul\u0000inside", "code": "IDENT_BAD_CHAR"}, {"name": "tab\tinside", "code": "IDENT_BAD_CHAR"}, {"name": "new\nline", "code": "IDENT_BAD_CHAR"}, {"name": "cr\rx", "code": "IDENT_BAD_CHAR"},
+  {"name": "del\u007fx", "code": "IDENT_BAD_CHAR"}, {"name": "c1\u0085x", "code": "IDENT_BAD_CHAR"}, {"name": "bidi‮override", "code": "IDENT_BAD_CHAR"}, {"name": "zwj‍x", "code": "IDENT_BAD_CHAR"},
+  {"name": "bom﻿x", "code": "IDENT_BAD_CHAR"}, {"name": "lsep x", "code": "IDENT_BAD_CHAR"}, {"name": "psep x", "code": "IDENT_BAD_CHAR"}, {"name": "privateuse", "code": "IDENT_BAD_CHAR"},
+  {"name": "lone\ud800surrogate", "code": "IDENT_NOT_UTF8"},
+  {"name": "é", "code": "IDENT_NOT_NFC"}, {"name": "Ångström", "code": "IDENT_NOT_NFC"}, {"name": "Å", "code": "IDENT_NOT_NFC", "note": "ANGSTROM SIGN normalizes to U+00C5"},
+  {"repeat": ["a", 129], "code": "IDENT_TOO_LONG"}
+ ]
+}

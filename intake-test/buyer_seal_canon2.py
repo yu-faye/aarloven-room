@@ -31,6 +31,13 @@ def read(path):
         return f.read()
 
 
+def sealed_relpath(table: str) -> str:
+    """Where the connector (seal.py) puts a table's ciphertext: a plain identifier keeps sealed/<table>.jsonl.sealed, any other name is sealed/x-<sha256 of the UTF-8 name>.jsonl.sealed."""
+    import hashlib
+    import re
+    return f"sealed/{table}.jsonl.sealed" if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table) else f"sealed/x-{hashlib.sha256(table.encode('utf-8')).hexdigest()}.jsonl.sealed"
+
+
 def bridge(sealed_dir: str, kek: bytes, pub) -> dict:
     manifest_bytes = read(os.path.join(sealed_dir, "manifest.json"))
     man = json.loads(manifest_bytes)
@@ -46,7 +53,7 @@ def bridge(sealed_dir: str, kek: bytes, pub) -> dict:
         "format": FORMAT,
         "manifest": manifest_bytes.decode("utf-8"),
         "wrapped_dek_b64": b64(pub.encrypt(dek, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None))),
-        "tables": {t: {"sealed_b64": b64(read(os.path.join(sealed_dir, "sealed", t + ".jsonl.sealed")))} for t in sorted(man["neutral_manifest"]["tables"])},
+        "tables": {t: {"sealed_b64": b64(read(os.path.join(sealed_dir, sealed_relpath(t))))} for t in sorted(man["neutral_manifest"]["tables"])},
     }
 
 
