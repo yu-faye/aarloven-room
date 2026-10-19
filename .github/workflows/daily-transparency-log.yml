@@ -13,6 +13,8 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      HAS_LOG_READER_ROLE: ${{ secrets.AWS_LOG_READER_ROLE_ARN != '' }}
     permissions:
       contents: write
       id-token: write  # Required for AWS OIDC
@@ -42,7 +44,7 @@ jobs:
           fi
       
       - name: Configure AWS credentials
-        if: ${{ secrets.AWS_LOG_READER_ROLE_ARN != '' }}
+        if: env.HAS_LOG_READER_ROLE == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_LOG_READER_ROLE_ARN }}
@@ -51,7 +53,7 @@ jobs:
       
       - name: Collect KMS events
         run: |
-          if [ -n "${{ secrets.AWS_LOG_READER_ROLE_ARN }}" ]; then
+          if [ "$HAS_LOG_READER_ROLE" = "true" ]; then
             echo "Collecting KMS/IAM events from CloudTrail..."
             python3 transparency-log/collect_kms_events.py \
               --date "${{ steps.date.outputs.date }}" \
