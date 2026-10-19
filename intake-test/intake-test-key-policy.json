@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Id": "aarloven-intake-test-key",
+  "Statement": [
+    {"Sid": "RootAccountAdmin", "Effect": "Allow", "Principal": {"AWS": "arn:aws:iam::882334275017:root"}, "Action": "kms:*", "Resource": "*"},
+    {"Sid": "DecryptOnlyIfTestRoomPCR0Matches", "Effect": "Allow",
+     "Principal": {"AWS": "arn:aws:iam::882334275017:role/aarloven-nitro-parent-role"},
+     "Action": "kms:Decrypt", "Resource": "*",
+     "Condition": {"StringEqualsIgnoreCase": {"kms:RecipientAttestation:PCR0": "b0d7bca68b9f7be48f94f6472e3033ebe23984eb6f735b8f2da32ab03df9d34030421a08c39ba088b24a8fbdba8f9c13"}}},
+    {"Sid": "NobodyDecryptsOutsideTheTestRoom", "Effect": "Deny", "Principal": "*", "Action": "kms:Decrypt", "Resource": "*",
+     "Condition": {"StringNotEqualsIgnoreCase": {"kms:RecipientAttestation:PCR0": "b0d7bca68b9f7be48f94f6472e3033ebe23984eb6f735b8f2da32ab03df9d34030421a08c39ba088b24a8fbdba8f9c13"}}},
+    {"Sid": "NobodyReEncryptsOut", "Effect": "Deny", "Principal": "*", "Action": "kms:ReEncryptFrom", "Resource": "*"}
+  ]
+}
