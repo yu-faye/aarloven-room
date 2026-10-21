@@ -4,6 +4,8 @@ name: Reproducible build check
 # match each other and EXPECTED_PCR0.txt. No AWS credentials, no secrets.
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 1'   # every Monday 04:17 UTC, so a drifting base image or package is caught even without code changes
   push:
     paths: &room
       - Dockerfile

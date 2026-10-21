@@ -1,3 +1,5 @@
+**Enabled 2026-10-21:** the workflow now lives at `.github/workflows/intake-test-repro-check.yml`. Its key-policy job fails on purpose until the KMS key is re-pinned to `88c12e7b`.
+
 # Draft workflow for the intake test room
 
 `intake-test-repro-check.yml` is a GitHub Actions workflow, kept here because the box's GitHub token has no `workflow` scope and GitHub refuses pushes that create files under `.github/workflows/`.
