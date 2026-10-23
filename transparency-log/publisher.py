@@ -21,7 +21,8 @@ from pathlib import Path
 
 # Add parent dir to path to import log_builder
 sys.path.insert(0, str(Path(__file__).parent))
-from log_builder import LogBuilder, Record
+from log_builder import LogBuilder, Record, collect_trial_env_pending, leaves_document
+import json
 
 
 def get_signing_key(key_arg: str = None) -> bytes:
@@ -76,6 +77,11 @@ def main():
         help="Hex-encoded Ed25519 signing key (32 bytes). Overrides SIGNING_KEY env var."
     )
     parser.add_argument(
+        "--trial-env-dir",
+        help="Directory with trial-environment day files (trial-env/YYYY-MM-DD.json). Default: ./trial-env",
+        default="trial-env"
+    )
+    parser.add_argument(
         "--allow-empty",
         action="store_true",
         help="Allow publishing with zero records (for testing)"
@@ -93,6 +99,10 @@ def main():
     print(f"Collecting records for {args.date} from {args.records_dir}...")
     records = builder.collect_records(Path(args.records_dir), args.date)
     
+    # Optional feed: trial-environment receipt fingerprints not yet in the log (added after the other records)
+    trial_records = collect_trial_env_pending(Path(args.trial_env_dir), Path(args.log_dir), args.date)
+    records.extend(trial_records)
+
     if not records:
         if args.allow_empty:
             print("No records found, but --allow-empty specified. Creating dummy record.")
@@ -126,8 +136,23 @@ def main():
     
     # Append to log
     print(f"Appending entry to {args.log_dir}/{args.date[:4]}.jsonl...")
+    leaves_path = tmp_leaves = None
+    if trial_records:
+        # Publish the day's leaf hashes so a buyer can recompute the Merkle root offline.
+        # Prepared before the entry is appended, moved into place right after it. (In CI a crash in between
+        # fails the job, and nothing is committed, so there is no half-published state.)
+        leaves_path = Path(args.log_dir) / "leaves" / f"{args.date}.json"
+        if leaves_path.exists():
+            print(f"❌ Error: {leaves_path} already exists", file=sys.stderr)
+            sys.exit(1)
+        leaves_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_leaves = leaves_path.with_name(leaves_path.name + ".tmp")
+        tmp_leaves.write_text(json.dumps(leaves_document(args.date, records), sort_keys=True, separators=(',', ':')) + "\n")
     try:
         builder.append_entry(entry)
+        if tmp_leaves:
+            os.replace(tmp_leaves, leaves_path)
+            print(f"Wrote {leaves_path} ({len(records)} leaf hashes, {len(trial_records)} trial-env file(s))")
         print(f"✅ Successfully published entry for {args.date}")
         
         # Verify chain integrity
@@ -140,6 +165,8 @@ def main():
             sys.exit(1)
             
     except ValueError as e:
+        if tmp_leaves and tmp_leaves.exists():
+            tmp_leaves.unlink()
         print(f"❌ Error: {e}", file=sys.stderr)
         sys.exit(1)
 
