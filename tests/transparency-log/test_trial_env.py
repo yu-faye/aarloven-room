@@ -151,6 +151,25 @@ class TestTrialEnvFeed(unittest.TestCase):
         self.assertEqual(e.record_count, 4)
         self.assertEqual(root_from_leaves(lv["leaves"]), e.merkle_root)
 
+    def test_bad_leaves_file_does_not_stop_the_log(self):
+        (self.log / "leaves").mkdir(parents=True)
+        (self.log / "leaves" / "2026-10-20.json").write_text('{"trial_files": null}')
+        self.write(canon(day_doc(self.date)))
+        self.publish(self.date)
+        self.assertEqual(self.entry(self.log, self.date).record_count, 3)
+
+    def test_existing_leaves_file_blocks_before_appending(self):
+        self.write(canon(day_doc(self.date)))
+        (self.log / "leaves").mkdir(parents=True)
+        (self.log / "leaves" / f"{self.date}.json").write_text("{}")
+        records = self.tmp / "records"; records.mkdir(exist_ok=True)
+        p = subprocess.run([sys.executable, str(ROOT / "transparency-log/publisher.py"), "--date", self.date,
+                            "--records-dir", str(records), "--log-dir", str(self.log), "--trial-env-dir", str(self.trial),
+                            "--key", TEST_KEY_HEX, "--allow-empty"], capture_output=True, text=True)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIsNone(LogBuilder(self.log).get_entry(self.date))
+        self.assertEqual(sorted(x.name for x in (self.log / "leaves").iterdir()), [f"{self.date}.json"])
+
     def test_leaves_document_order_matches_tree(self):
         recs = [Record("x", "t", f"{i:064x}", {}) for i in range(5)]
         doc = leaves_document("d", recs)

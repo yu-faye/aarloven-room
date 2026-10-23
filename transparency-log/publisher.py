@@ -136,15 +136,23 @@ def main():
     
     # Append to log
     print(f"Appending entry to {args.log_dir}/{args.date[:4]}.jsonl...")
+    leaves_path = tmp_leaves = None
+    if trial_records:
+        # Publish the day's leaf hashes so a buyer can recompute the Merkle root offline.
+        # Prepared before the entry is appended, moved into place right after it. (In CI a crash in between
+        # fails the job, and nothing is committed, so there is no half-published state.)
+        leaves_path = Path(args.log_dir) / "leaves" / f"{args.date}.json"
+        if leaves_path.exists():
+            print(f"❌ Error: {leaves_path} already exists", file=sys.stderr)
+            sys.exit(1)
+        leaves_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_leaves = leaves_path.with_name(leaves_path.name + ".tmp")
+        tmp_leaves.write_text(json.dumps(leaves_document(args.date, records), sort_keys=True, separators=(',', ':')) + "\n")
     try:
         builder.append_entry(entry)
-        if trial_records:
-            # Publish the day's leaf hashes so a buyer can recompute the Merkle root offline
-            leaves_dir = Path(args.log_dir) / "leaves"
-            leaves_dir.mkdir(parents=True, exist_ok=True)
-            with open(leaves_dir / f"{args.date}.json", "x") as lf:
-                lf.write(json.dumps(leaves_document(args.date, records), sort_keys=True, separators=(',', ':')) + "\n")
-            print(f"Wrote {leaves_dir}/{args.date}.json ({len(records)} leaf hashes, {len(trial_records)} trial-env file(s))")
+        if tmp_leaves:
+            os.replace(tmp_leaves, leaves_path)
+            print(f"Wrote {leaves_path} ({len(records)} leaf hashes, {len(trial_records)} trial-env file(s))")
         print(f"✅ Successfully published entry for {args.date}")
         
         # Verify chain integrity
@@ -157,6 +165,8 @@ def main():
             sys.exit(1)
             
     except ValueError as e:
+        if tmp_leaves and tmp_leaves.exists():
+            tmp_leaves.unlink()
         print(f"❌ Error: {e}", file=sys.stderr)
         sys.exit(1)
 

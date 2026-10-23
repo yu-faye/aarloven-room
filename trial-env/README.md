@@ -36,7 +36,14 @@ here that is dated on or before the run date and that no earlier run has include
 `metadata={"file":"trial-env/<name>"}`. On such days it also writes `public-log/leaves/<run date>.json`
 with the day's leaf hashes in tree order and the list of trial files it included, so anyone can recompute
 the signed Merkle root without the private `records/`. A file is included at most once; editing or
-deleting it afterwards is detected by the buyer-side verifier.
+deleting it afterwards is detected by the buyer-side verifier. `trial_files` is only a hint (it is not
+covered by the signature): verifiers decide that a file is included by recomputing its leaf and finding
+it among leaves that reproduce the signed root.
+
+**Publication deadline.** A receipt is expected in the signed log within 3 daily runs after it was
+issued (or within 4 days by the clock, in case the log stops). The buyer-side verifier treats a receipt
+that is still missing after that as a failure (hidden, log stopped, or we forgot to export), so even
+deleting files from this repo cannot silently hide a receipt.
 
 So it does not matter exactly when GitHub starts the scheduled run: a file merged after a run is simply
 included by the next one.
@@ -54,7 +61,9 @@ It checks every log entry signature (key in `public-log/PUBLIC_KEY.txt`; compare
 day-to-day hash chain, that each trial file is in the leaves of the day that signed it and that those
 leaves give the signed root, then that each of your receipts is published under your pseudonym, that the
 published chain head matches your last receipt, and that your published history never loses a receipt,
-changes a hash, or moves its head backwards.
+changes a hash, or moves its head backwards. With `--state <file>` it also remembers the latest log
+entry and chain head it saw, and fails next time if the log was truncated or rewritten, or the head went
+back. It also rejects a log whose first entry is not the genesis entry (prefix deleted).
 
 It does not use `MerkleTree.get_inclusion_proof` (that function has a known, parked issue for the last
 node of an odd-sized level); it recomputes the full tree from the published leaves instead.

@@ -162,15 +162,20 @@ TRIAL_ENV_FORMAT = "aarloven.trial-env-day.v1"
 
 
 def anchored_trial_files(log_dir: Path) -> Dict[str, str]:
-    """trial-env file name -> date of the log entry that already includes it (from public-log/leaves/*.json)."""
+    """trial-env file name -> date of the log entry that already includes it (from public-log/leaves/*.json).
+    This list is only a hint to avoid logging a file twice; verifiers decide "included" by recomputing the
+    file's leaf and finding it among leaves that reproduce the signed Merkle root."""
     out: Dict[str, str] = {}
     for lf in sorted((Path(log_dir) / "leaves").glob("*.json")):
         try:
             doc = json.loads(lf.read_text())
-            for name in doc.get("trial_files", []):
-                out.setdefault(name, doc.get("date", lf.stem))
-        except (ValueError, AttributeError):
-            print(f"WARNING: cannot read {lf}", file=sys.stderr)
+            names = doc.get("trial_files", []) if isinstance(doc, dict) else None
+            if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+                raise ValueError("trial_files is not a list of names")
+            for name in names:
+                out.setdefault(name, lf.stem)
+        except Exception as e:  # a bad leaves file must not stop the daily log
+            print(f"WARNING: cannot read {lf}: {e}", file=sys.stderr)
     return out
 
 
