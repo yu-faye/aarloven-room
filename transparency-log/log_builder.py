@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
+import sys
 
 
 def hash_data(data: bytes) -> str:
@@ -155,6 +156,65 @@ class DailyEntry:
             f"{self.previous_entry_hash or 'GENESIS'}"
         )
         return hash_data(chain_input.encode('utf-8'))
+
+
+TRIAL_ENV_FORMAT = "aarloven.trial-env-day.v1"
+
+
+def anchored_trial_files(log_dir: Path) -> Dict[str, str]:
+    """trial-env file name -> date of the log entry that already includes it (from public-log/leaves/*.json)."""
+    out: Dict[str, str] = {}
+    for lf in sorted((Path(log_dir) / "leaves").glob("*.json")):
+        try:
+            doc = json.loads(lf.read_text())
+            for name in doc.get("trial_files", []):
+                out.setdefault(name, doc.get("date", lf.stem))
+        except (ValueError, AttributeError):
+            print(f"WARNING: cannot read {lf}", file=sys.stderr)
+    return out
+
+
+def collect_trial_env_pending(trial_dir: Path, log_dir: Path, date: str) -> List[Record]:
+    """
+    Trial-environment receipt fingerprints (optional feed).
+
+    The box exports trial-env/YYYY-MM-DD.json (receipt hashes + per-buyer chain heads,
+    buyer ids replaced by salted pseudonyms, no receipt contents); Yufei commits it to main.
+    Each daily run picks up every such file dated <= the run date that no earlier run has
+    included yet (so it does not matter when GitHub actually starts the scheduled run),
+    and turns each into ONE record whose content_hash is the SHA-256 of the file's exact bytes.
+    A file is included at most once; editing it afterwards is visible to verifiers.
+    Malformed files are skipped with a warning: they must never stop the daily log.
+    """
+    trial_dir = Path(trial_dir)
+    if not trial_dir.is_dir():
+        return []
+    done = anchored_trial_files(log_dir)
+    out: List[Record] = []
+    for f in sorted(trial_dir.glob("????-??-??.json")):
+        d = f.stem
+        if d > date or f.name in done:
+            continue
+        raw = f.read_bytes()
+        try:
+            doc = json.loads(raw)
+            ok = (isinstance(doc, dict) and doc.get("format") == TRIAL_ENV_FORMAT and doc.get("date") == d
+                  and raw == json.dumps(doc, sort_keys=True, separators=(',', ':')).encode('utf-8') + b"\n")
+        except ValueError:
+            ok = False
+        if not ok:
+            print(f"WARNING: {f} is not a canonical {TRIAL_ENV_FORMAT} file; not logged", file=sys.stderr)
+            continue
+        out.append(Record(record_type="trial_env_day", timestamp=d, content_hash=hash_data(raw),
+                          metadata={"file": f"trial-env/{f.name}"}))
+    return out
+
+
+def leaves_document(date: str, records: List[Record]) -> Dict[str, Any]:
+    """The ordered leaf hashes of a day's Merkle tree, so anyone can recompute the root offline,
+    plus which trial-env files this day includes. Only hashes are published; record contents stay private."""
+    return {"date": date, "leaves": [r.compute_hash() for r in records],
+            "trial_files": [r.metadata["file"].split("/", 1)[1] for r in records if r.record_type == "trial_env_day"]}
 
 
 class LogBuilder:

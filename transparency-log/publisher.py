@@ -21,7 +21,8 @@ from pathlib import Path
 
 # Add parent dir to path to import log_builder
 sys.path.insert(0, str(Path(__file__).parent))
-from log_builder import LogBuilder, Record
+from log_builder import LogBuilder, Record, collect_trial_env_pending, leaves_document
+import json
 
 
 def get_signing_key(key_arg: str = None) -> bytes:
@@ -76,6 +77,11 @@ def main():
         help="Hex-encoded Ed25519 signing key (32 bytes). Overrides SIGNING_KEY env var."
     )
     parser.add_argument(
+        "--trial-env-dir",
+        help="Directory with trial-environment day files (trial-env/YYYY-MM-DD.json). Default: ./trial-env",
+        default="trial-env"
+    )
+    parser.add_argument(
         "--allow-empty",
         action="store_true",
         help="Allow publishing with zero records (for testing)"
@@ -93,6 +99,10 @@ def main():
     print(f"Collecting records for {args.date} from {args.records_dir}...")
     records = builder.collect_records(Path(args.records_dir), args.date)
     
+    # Optional feed: trial-environment receipt fingerprints not yet in the log (added after the other records)
+    trial_records = collect_trial_env_pending(Path(args.trial_env_dir), Path(args.log_dir), args.date)
+    records.extend(trial_records)
+
     if not records:
         if args.allow_empty:
             print("No records found, but --allow-empty specified. Creating dummy record.")
@@ -128,6 +138,13 @@ def main():
     print(f"Appending entry to {args.log_dir}/{args.date[:4]}.jsonl...")
     try:
         builder.append_entry(entry)
+        if trial_records:
+            # Publish the day's leaf hashes so a buyer can recompute the Merkle root offline
+            leaves_dir = Path(args.log_dir) / "leaves"
+            leaves_dir.mkdir(parents=True, exist_ok=True)
+            with open(leaves_dir / f"{args.date}.json", "x") as lf:
+                lf.write(json.dumps(leaves_document(args.date, records), sort_keys=True, separators=(',', ':')) + "\n")
+            print(f"Wrote {leaves_dir}/{args.date}.json ({len(records)} leaf hashes, {len(trial_records)} trial-env file(s))")
         print(f"✅ Successfully published entry for {args.date}")
         
         # Verify chain integrity

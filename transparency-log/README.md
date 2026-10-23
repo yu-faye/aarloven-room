@@ -106,7 +106,11 @@ Run the full test suite:
 python3 tests/transparency-log/test_log.py
 ```
 
-All tests should pass.
+All tests should pass. The trial-environment feed has its own tests:
+
+```bash
+python3 tests/transparency-log/test_trial_env.py
+```
 
 ## Log Format
 
@@ -148,6 +152,7 @@ Records collected for each day:
 - **countersignatures**: Expert countersignatures (per D-019)
 - **kms_policy**: KMS key policy changes
 - **manifest**: Manifest/PCR0 releases (per D-006)
+- **trial_env_day**: one per trial-environment day file (`trial-env/YYYY-MM-DD.json`, receipt hashes + per-buyer chain heads under salted pseudonyms). Optional; see `trial-env/README.md`. On days with such a record the publisher also writes `public-log/leaves/<date>.json` (leaf hashes in tree order + included trial files) so the root can be recomputed offline.
 
 ## Signing Key Management
 

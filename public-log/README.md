@@ -19,6 +19,8 @@ For `PutKeyPolicy` events, the full policy document is stored (so outsiders can 
 
 **Privacy**: No personal names, IP addresses, or account-specific identifiers appear in the log. Actor identifiers are reduced to short hashes.
 
+**Trial-environment receipt fingerprints** (optional, see `trial-env/README.md`): receipt hashes and per-buyer chain heads under salted pseudonyms; no names, no receipt contents. On days that include such a file, `leaves/<date>.json` lists that day's leaf hashes so anyone can recompute the signed Merkle root.
+
 **When the feed is not connected**: If AWS credentials are not configured, each day's entry includes a record stating "kms feed not connected" rather than claiming zero changes. This makes a missing credential distinguishable from a quiet day.
 
 ## What it proves
